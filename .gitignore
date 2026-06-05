@@ -125,3 +125,13 @@ tmp/
 userData/
 data/local/
 .env.local
+
+# ===== Mavis / agent runtime =====
+# mavis daemon 的运行时工作目录（plans、decisions、scratchpads）
+.mavis/
+# per-rein 工作记忆 — 自动写入，每个 session/机器不同；
+# agent 的真正 memory 存在 ~/.mavis/agents/<name>/memory/
+.harness/reins/*/memory/
+# opencode 运行时数据：opencode.json 含用户 API key + 私有 baseURL，
+# node_modules 是指向 opencode SDK 的符号链接，整目录都是 per-machine 状态
+.harness/reins/*/opencode/
