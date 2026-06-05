@@ -1,0 +1,127 @@
+{
+  "common": {
+    "appName": "Prism",
+    "appTagline": "Refract the noise"
+  },
+  "nav": {
+    "workspace": "Workspace",
+    "system": "System",
+    "inbox": "Inbox",
+    "knowledge": "Knowledge",
+    "sources": "Sources",
+    "settings": "Settings"
+  },
+  "search": {
+    "placeholder": "Search knowledge, sources, tags…"
+  },
+  "actions": {
+    "sync": "Sync"
+  },
+  "sidebar": {
+    "sidecarConnected": "Sidecar connected"
+  },
+  "theme": {
+    "cardTitle": "Appearance",
+    "cardDescription": "Choose how Prism looks. <1>System</1> follows your OS dark/light setting and updates live.",
+    "optionLight": "Light",
+    "optionDark": "Dark",
+    "optionSystem": "System",
+    "hintLight": "Always light",
+    "hintDark": "Always dark",
+    "hintSystemAuto": "Auto",
+    "hintSystemCurrentLight": "Currently light",
+    "hintSystemCurrentDark": "Currently dark"
+  },
+  "language": {
+    "cardTitle": "Language",
+    "cardDescription": "Interface language. Changes apply immediately."
+  },
+  "inbox": {
+    "filter": "Filter",
+    "status": "Status",
+    "sources": "Sources",
+    "allSources": "All sources",
+    "title": "Inbox",
+    "count_one": "{{count}} item",
+    "count_other": "{{count}} items",
+    "inSelectedSource": " in selected source",
+    "emptyTitle": "Your inbox is empty",
+    "emptyDescription": "Add a source to start collecting AI news. Prism will distill each item into searchable knowledge."
+  },
+  "statusFilter": {
+    "all": "All",
+    "unread": "Unread",
+    "starred": "Starred",
+    "archived": "Archived"
+  },
+  "itemStatus": {
+    "unread": "Unread",
+    "read": "Read",
+    "starred": "Starred",
+    "archived": "Archived"
+  },
+  "knowledge": {
+    "title": "Knowledge Base",
+    "description": "All distilled knowledge, grouped by source.",
+    "entries_one": "{{count}} entry",
+    "entries_other": "{{count}} entries",
+    "noMatches": "No matches",
+    "noKnowledge": "No knowledge yet — add a source and run a sync."
+  },
+  "sources": {
+    "title": "Sources",
+    "description": "RSS, YouTube, podcasts, blogs — Prism will sync and distill on schedule.",
+    "addSource": "Add source",
+    "active": "Active",
+    "paused": "Paused",
+    "itemsCount_one": "{{count}} item",
+    "itemsCount_other": "{{count}} items",
+    "lastSynced": "last synced",
+    "lastSyncedNever": "never",
+    "emptyTitle": "No sources yet",
+    "emptyDescription": "Add an RSS feed, YouTube channel, or podcast URL to start collecting knowledge."
+  },
+  "settings": {
+    "title": "Settings",
+    "description": "Prism status, integration points, and developer tools.",
+    "sidecarTitle": "Sidecar Status",
+    "sidecarDescription": "The Python sidecar handles content fetching, LLM distillation, and MCP.",
+    "healthy": "Healthy",
+    "unreachable": "Unreachable",
+    "endpoint": "Endpoint",
+    "version": "Version",
+    "sourcesCount": "Sources",
+    "itemsCount": "Items",
+    "uptime": "Uptime",
+    "integrationsTitle": "Integrations",
+    "integrationsDescription": "Connect Prism to your AI agents.",
+    "integrationMcp": "MCP Server",
+    "integrationMcpDescription": "Expose Prism's knowledge as MCP tools (read/search/subscribe).",
+    "integrationSkill": "Agent Skill",
+    "integrationSkillDescription": "A reusable skill bundle (Mavis / OpenCode / Claude Code / etc.) that wraps Prism's API.",
+    "integrationLlm": "LLM Provider",
+    "integrationLlmDescription": "OpenAI / Anthropic / Gemini / local Ollama — pick what distills your feeds.",
+    "active": "Active",
+    "comingSoon": "Coming soon",
+    "developerTitle": "Developer",
+    "developerSidecarLog": "Sidecar log",
+    "developerSidecarLogValue": "python/prism_sidecar/ — see logs/server.log",
+    "developerResetData": "Reset data",
+    "developerResetDataValue": "rm ~/.prism/prism.db && restart",
+    "developerDocs": "Docs",
+    "developerDocsValue": "docs/ARCHITECTURE.md"
+  },
+  "detail": {
+    "selectTitle": "Select an item to preview",
+    "selectDescription": "Pick anything from the list to see its distilled knowledge here.",
+    "summary": "Summary",
+    "keyPoints": "Key Points",
+    "tags": "Tags",
+    "metadata": "Metadata",
+    "type": "Type",
+    "author": "Author",
+    "status": "Status",
+    "notFound": "Item not found.",
+    "openOriginal": "Open original"
+  }
+}

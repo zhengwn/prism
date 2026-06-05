@@ -10,6 +10,13 @@
   - Tauri auto-spawns the Python sidecar via `uv run prism-sidecar`
   - Vite dev server on `http://localhost:1420`
   - Sidecar on `http://127.0.0.1:8765`
+- **Recover from a stuck dev server (`dev:clean`):** if `tauri:dev` is killed
+  uncleanly (force-quit, crash, lost terminal), ports 1420 / 8765 may stay
+  bound by orphan vite / prism-sidecar processes and the next `tauri:dev`
+  will fail with `Port 1420 is already in use`. Run `npm run dev:clean` —
+  it kills whoever is holding those two ports and re-launches dev. Use this
+  only when dev is not running cleanly; do not run it while a healthy dev
+  session is up.
 - **Run sidecar only (no Tauri):** `npm run sidecar:dev` — useful for debugging the Python layer
 - **Build:** `npm run tauri:build` (bundles Tauri + frontend; sidecar bundling is a v0.4 task)
 - **Frontend typecheck:** `npx tsc -b`
@@ -68,6 +75,35 @@ prism/
 - **Python:** Python 3.11+, type hints everywhere, Pydantic v2 for all data shapes
 - **Commits:** conventional commits (`feat:` / `fix:` / `docs:` / `refactor:` / `chore:`)
 
+## Product invariants (apply to ALL new code, not optional)
+
+These are non-negotiable design rules. Every PR that touches UI or
+content rendering must satisfy them — reviewers should block on
+violations. They are project-specific product decisions, not generic
+best-practice, so they live here rather than in agent memory.
+
+- **i18n is mandatory.** Every user-visible string in `src/components/` and
+  `src/pages/` must go through the `t()` hook from `useLanguage`. Hard-coded
+  English in JSX is a defect, not a style choice. When adding a new key,
+  populate BOTH `src/i18n/en.json` AND `src/i18n/zh.json` in the same
+  commit — never ship an English-only key. The brand string "Prism" and
+  short technical tokens (icons, kbd shortcuts) are exempt; everything
+  else is translated. User-supplied content (article titles, summaries,
+  tags) is NOT translated — that is data, not chrome.
+- **Both themes must work.** Every UI element must look correct in light
+  AND dark mode (and the "system" / follow-OS mode, which spans both).
+  Use semantic Tailwind tokens that map through the CSS variables in
+  `src/styles/globals.css` — `bg-background`, `text-foreground`,
+  `border-border`, `bg-card`, `text-muted-foreground`, etc. NEVER hard-code
+  hex colors, raw `hsl(...)` values, or `dark:` / `light:`-only utility
+  classes. If a new color is needed, add a variable to BOTH `:root` and
+  `.dark` blocks in `globals.css` first, then map it in `tailwind.config.js`.
+- **Adding a language:** see the docstring in `src/i18n/index.ts` for the
+  4-step checklist (json file → Language union → register resource → label).
+- **Adding a theme mode:** extend the `Theme` union in `src/lib/theme.ts`,
+  add the corresponding `.dark` (or `:root`) block in `globals.css` if
+  the resolution is novel, and update the Settings picker.
+
 ## Testing instructions
 
 - **v0.1 has no automated tests yet** — verify manually with:
@@ -100,21 +136,22 @@ prism/
 ## Theme system (v0.1)
 
 Three-state model: `light` / `dark` / `system`. `system` live-follows
-`prefers-color-scheme`. The code is intentionally split into three modules —
-**do not collapse them**, the split is what makes FOUC-free first paint possible:
+`prefers-color-scheme`. The code is split into three layers — the split is
+what makes FOUC-free first paint possible:
 
-| File | Role | Loads at |
+| File | Role | When it runs |
 |---|---|---|
-| `src/lib/theme-runtime.ts` | Framework-free helpers: `Theme` type, `THEME_STORAGE_KEY` (`"prism-theme"`), `readStoredTheme`, `resolveDark`, `applyTheme`. | Module load (zero deps) |
-| `src/lib/theme-init.ts` | Synchronous FOUC bootstrap. `import` for side effect → read localStorage → apply `.dark` to `<html>`. | First import in `main.tsx`, before React |
-| `src/store/theme.ts` | `useThemeStore` (Zustand) with `setTheme` / `cycleTheme`. Module load registers a `matchMedia` change listener (only re-applies when in `system` mode). | First import by any UI consumer |
+| `index.html` inline `<script>` | FOUC bootstrap: reads `localStorage["prism-theme"]`, applies `.dark` + `color-scheme` to `<html>` before the first paint. Mirrors `src/lib/theme.ts` — **keep them in sync**. | Before `<body>` renders, before React loads |
+| `src/lib/theme.ts` | Framework-free helpers: `Theme` / `ResolvedTheme` types, `getStoredTheme` / `setStoredTheme` / `getSystemTheme` / `resolveTheme` / `applyTheme`. | Module load (zero deps) |
+| `src/hooks/useTheme.ts` | React hook: `useState` for `theme` + `resolvedTheme`, `useEffect` to re-apply on change, `matchMedia` listener for live OS-following in `system` mode. | First import by any UI consumer |
 
 `tailwind.config.js` uses `darkMode: ["class"]`; CSS variables in
 `src/styles/globals.css` (`:root` and `.dark`) already define the palette —
 **add new theme tokens there, never hardcode colors in components**.
 
 When extending (e.g. a "high-contrast" mode in v0.2+): extend the `Theme`
-union in `theme-runtime.ts` first, then everything else follows.
+union in `src/lib/theme.ts`, then update both the inline script in
+`index.html` and the Settings picker.
 
 ## What agents should NOT do
 

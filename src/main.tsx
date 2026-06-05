@@ -1,6 +1,6 @@
-// MUST be the first import — it runs synchronously at module load to apply
-// the stored/system theme to <html> before the first paint, preventing FOUC.
-import "@/lib/theme-init";
+// FOUC-free theme bootstrap is handled by an inline <script> in index.html
+// that runs synchronously before this module loads — see the docstring there
+// and `src/lib/theme.ts` for the resolver that the inline script mirrors.
 
 import React from "react";
 import ReactDOM from "react-dom/client";
@@ -8,6 +8,10 @@ import { BrowserRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import "./styles/globals.css";
+// Side-effect import: initializes i18next with the user's chosen language
+// (or the OS preference on first launch) and registers the React context.
+// Must run before any component calls useTranslation().
+import "./i18n";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -40,23 +44,13 @@ class ErrorBoundary extends React.Component<
 
   render() {
     if (this.state.error) {
+      // Use semantic theme tokens so the fallback is readable in both
+      // light and dark mode. (Inline color literals would lock the page
+      // to dark and look broken in a light theme.)
       return (
-        <div
-          style={{
-            padding: 24,
-            fontFamily: "ui-monospace, SFMono-Regular, monospace",
-            fontSize: 13,
-            lineHeight: 1.5,
-            color: "#fca5a5",
-            background: "#0f172a",
-            minHeight: "100vh",
-            boxSizing: "border-box",
-          }}
-        >
-          <div style={{ fontWeight: 600, marginBottom: 8, color: "#f87171" }}>
-            Prism — render error
-          </div>
-          <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>
+        <div className="min-h-screen bg-background p-6 font-mono text-[13px] leading-relaxed text-destructive">
+          <div className="mb-2 font-semibold">Prism — render error</div>
+          <pre className="m-0 whitespace-pre-wrap">
             {this.state.error.message}
             {"\n\n"}
             {this.state.error.stack}
