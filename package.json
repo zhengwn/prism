@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:all": "concurrently -n vite,sidecar -c blue,magenta --kill-others-on-fail \"npm run dev\" \"npm run sidecar:dev\"",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
@@ -37,6 +38,7 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
     "autoprefixer": "^10.4.20",
+    "concurrently": "^10.0.3",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.15",
     "tailwindcss-animate": "^1.0.7",
