@@ -1,13 +1,17 @@
-import { Search, RefreshCw, Command } from "lucide-react";
+import { Search, RefreshCw, Command, Sun, Moon, Monitor } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { usePrismStore } from "@/store";
+import { useThemeStore } from "@/store/theme";
 import { api } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
+import type { Theme } from "@/lib/theme-runtime";
 
 export function TopBar() {
   const searchQuery = usePrismStore((s) => s.searchQuery);
   const setSearchQuery = usePrismStore((s) => s.setSearchQuery);
+  const theme = useThemeStore((s) => s.theme);
+  const cycleTheme = useThemeStore((s) => s.cycleTheme);
   const qc = useQueryClient();
 
   const handleSync = async () => {
@@ -44,6 +48,35 @@ export function TopBar() {
         <RefreshCw className="h-3.5 w-3.5" />
         Sync
       </Button>
+      <ThemeToggle theme={theme} onCycle={cycleTheme} />
     </header>
+  );
+}
+
+function ThemeToggle({
+  theme,
+  onCycle,
+}: {
+  theme: Theme;
+  onCycle: () => void;
+}) {
+  const Icon = theme === "light" ? Sun : theme === "dark" ? Moon : Monitor;
+  const label =
+    theme === "light"
+      ? "Light — click for dark"
+      : theme === "dark"
+      ? "Dark — click for system"
+      : "System — click for light";
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      onClick={onCycle}
+      title={label}
+      aria-label={label}
+      className="h-8 w-8"
+    >
+      <Icon className="h-3.5 w-3.5" />
+    </Button>
   );
 }

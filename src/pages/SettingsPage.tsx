@@ -3,7 +3,10 @@ import { api, SIDECAR_BASE } from "@/lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { Cpu, Plug, Wrench } from "lucide-react";
+import { Cpu, Plug, Wrench, Sun, Moon, Monitor, Palette } from "lucide-react";
+import { useThemeStore } from "@/store/theme";
+import type { Theme } from "@/lib/theme-runtime";
+import { cn } from "@/lib/utils";
 
 export function SettingsPage() {
   const { data: health } = useQuery({
@@ -21,6 +24,9 @@ export function SettingsPage() {
             Prism status, integration points, and developer tools.
           </p>
         </div>
+
+        {/* Appearance */}
+        <AppearanceCard />
 
         {/* Status */}
         <Card>
@@ -102,6 +108,96 @@ export function SettingsPage() {
         </Card>
       </div>
     </div>
+  );
+}
+
+function AppearanceCard() {
+  const theme = useThemeStore((s) => s.theme);
+  const setTheme = useThemeStore((s) => s.setTheme);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Palette className="h-4 w-4" />
+          <CardTitle className="text-base">Appearance</CardTitle>
+        </div>
+        <CardDescription>
+          Choose how Prism looks. "System" follows your OS appearance.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div
+          role="radiogroup"
+          aria-label="Color theme"
+          className="grid grid-cols-1 gap-2 sm:grid-cols-3"
+        >
+          <ThemeOption
+            value="light"
+            current={theme}
+            onSelect={setTheme}
+            icon={Sun}
+            label="Light"
+            description="Always light"
+          />
+          <ThemeOption
+            value="dark"
+            current={theme}
+            onSelect={setTheme}
+            icon={Moon}
+            label="Dark"
+            description="Always dark"
+          />
+          <ThemeOption
+            value="system"
+            current={theme}
+            onSelect={setTheme}
+            icon={Monitor}
+            label="System"
+            description="Follow OS"
+          />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ThemeOption({
+  value,
+  current,
+  onSelect,
+  icon: Icon,
+  label,
+  description,
+}: {
+  value: Theme;
+  current: Theme;
+  onSelect: (t: Theme) => void;
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  description: string;
+}) {
+  const selected = current === value;
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      onClick={() => onSelect(value)}
+      className={cn(
+        "flex items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors",
+        "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        selected
+          ? "border-primary bg-accent text-accent-foreground ring-1 ring-primary/40"
+          : "border-border bg-card text-card-foreground",
+      )}
+    >
+      <Icon className="h-4 w-4 shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium leading-tight">{label}</div>
+        <div className="text-xs text-muted-foreground">{description}</div>
+      </div>
+    </button>
   );
 }
 

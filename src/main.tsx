@@ -1,3 +1,7 @@
+// MUST be the first import — it runs synchronously at module load to apply
+// the stored/system theme to <html> before the first paint, preventing FOUC.
+import "@/lib/theme-init";
+
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
