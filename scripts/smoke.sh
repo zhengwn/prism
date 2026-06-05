@@ -177,9 +177,13 @@ version=$(jget "$health" "data['version']")
 [[ -n "$version" && "$version" != "null" ]] || fail "/health .version missing"
 sources_count=$(jget "$health" "data['sourcesCount']")
 [[ "$sources_count" =~ ^[0-9]+$ ]] && (( sources_count >= 1 )) || fail "/health .sourcesCount not a positive int (got '$sources_count')"
+# v0.2a: itemsCount is 0 until a sync runs (no in-memory pre-populated items).
+# We do NOT require itemsCount >= 1 here; instead we trigger /api/sync below
+# and re-check. The legacy v0.1 smoke asserted itemsCount >= 1 because
+# fixtures pre-populated items — that no longer applies.
 items_count=$(jget "$health" "data['itemsCount']")
-[[ "$items_count" =~ ^[0-9]+$ ]] && (( items_count >= 1 )) || fail "/health .itemsCount not a positive int (got '$items_count')"
-log "/health OK  version=$version  sources=$sources_count  items=$items_count"
+[[ "$items_count" =~ ^[0-9]+$ ]] || fail "/health .itemsCount not an int (got '$items_count')"
+log "/health OK  version=$version  sources=$sources_count  items=$items_count (pre-sync)"
 
 log "GET $SOURCES_URL"
 sources_body=$(curl -fsS --max-time 5 "$SOURCES_URL")
@@ -193,10 +197,24 @@ first_kind=$(jget "$sources_body" "data[0]['kind']")
 [[ -n "$first_kind" && "$first_kind" != "null" ]] || fail "/api/sources[0].kind missing"
 log "/api/sources OK  count=$sources_len  first=$first_id ($first_name, $first_kind)"
 
+# v0.2a: items now come from real fetches. Trigger a sync and verify items
+# get persisted. We do this for a SINGLE source (first_id) to keep the
+# smoke fast — /api/sync without args would fetch all sources and could
+# take >30s. Verifier will exercise the full-pipeline path separately.
+log "POST ${BASE_URL}/api/sync/$first_id (single-source sync, fast)"
+sync_body=$(curl -fsS --max-time 60 -X POST "${BASE_URL}/api/sync/$first_id" || true)
+if [[ -z "$sync_body" ]]; then
+  log "WARN: single-source sync returned no body; falling back to /api/items assertion without sync"
+else
+  sync_status=$(jget "$sync_body" "data['status']")
+  sync_items_new=$(jget "$sync_body" "data['itemsNew']")
+  log "/api/sync/$first_id OK  status=$sync_status  itemsNew=$sync_items_new"
+fi
+
 log "GET $ITEMS_URL"
 items_body=$(curl -fsS --max-time 5 "$ITEMS_URL")
 items_len=$(jget "$items_body" "len(data)")
-(( items_len >= 1 )) || fail "/api/items expected >=1 item, got $items_len"
+(( items_len >= 1 )) || fail "/api/items expected >=1 item after sync, got $items_len"
 item_id=$(jget "$items_body" "data[0]['id']")
 item_title=$(jget "$items_body" "data[0]['title']")
 item_source_id=$(jget "$items_body" "data[0]['sourceId']")
