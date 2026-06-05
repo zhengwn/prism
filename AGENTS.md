@@ -15,7 +15,7 @@
 - **Frontend typecheck:** `npx tsc -b`
 - **Frontend production build:** `npx vite build`
 - **Rust check:** `cd src-tauri && cargo check`
-- **Sidecar smoke test:** `curl http://127.0.0.1:8765/health`
+- **Sidecar smoke test:** `npm run smoke` — boots the sidecar, hits `/health`, `/api/sources`, `/api/items`, validates the JSON shape, and tears the process down. Windows users can run `pwsh -File scripts/smoke.ps1` instead. Manual one-shot probe: `curl http://127.0.0.1:8765/health`.
 
 ## Project layout
 

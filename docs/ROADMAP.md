@@ -10,9 +10,9 @@
 - [x] 三栏布局（侧栏 + 内容区 + 详情区）
 - [x] 路由（Inbox / Knowledge / Sources / Settings）
 - [x] 假数据端到端跑通
+- [x] 端到端冒烟测试 (`npm run smoke` / `pwsh scripts/smoke.ps1`)
 - [ ] 图标（替换占位）
 - [ ] 暗/亮主题切换
-- [ ] 端到端冒烟测试
 
 ## v0.2 — Real Pipeline
 
