@@ -10,6 +10,13 @@
   - Tauri auto-spawns the Python sidecar via `uv run prism-sidecar`
   - Vite dev server on `http://localhost:1420`
   - Sidecar on `http://127.0.0.1:8765`
+- **Recover from a stuck dev server (`dev:clean`):** if `tauri:dev` is killed
+  uncleanly (force-quit, crash, lost terminal), ports 1420 / 8765 may stay
+  bound by orphan vite / prism-sidecar processes and the next `tauri:dev`
+  will fail with `Port 1420 is already in use`. Run `npm run dev:clean` —
+  it kills whoever is holding those two ports and re-launches dev. Use this
+  only when dev is not running cleanly; do not run it while a healthy dev
+  session is up.
 - **Run sidecar only (no Tauri):** `npm run sidecar:dev` — useful for debugging the Python layer
 - **Build:** `npm run tauri:build` (bundles Tauri + frontend; sidecar bundling is a v0.4 task)
 - **Frontend typecheck:** `npx tsc -b`
