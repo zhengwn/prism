@@ -1,11 +1,36 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark light" />
     <title>Prism — Refract the noise</title>
+    <script>
+      // Runs synchronously before <body> renders, so the first paint already
+      // matches the user's choice — no light→dark or dark→light flash.
+      // Mirrors the resolve logic in src/lib/theme.ts; keep them in sync.
+      (function () {
+        try {
+          var stored = localStorage.getItem("prism-theme");
+          var mode = stored === "light" || stored === "dark" || stored === "system"
+            ? stored
+            : "system";
+          var resolved = mode === "system"
+            ? (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light")
+            : mode;
+          var root = document.documentElement;
+          if (resolved === "dark") root.classList.add("dark");
+          root.style.colorScheme = resolved;
+        } catch (_e) {
+          // localStorage / matchMedia unavailable — fall back to dark, the v0.1 default.
+          document.documentElement.classList.add("dark");
+          document.documentElement.style.colorScheme = "dark";
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

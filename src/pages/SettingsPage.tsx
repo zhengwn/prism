@@ -3,7 +3,10 @@ import { api, SIDECAR_BASE } from "@/lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { Cpu, Plug, Wrench } from "lucide-react";
+import { Cpu, Plug, Wrench, Palette, Sun, Moon, Monitor } from "lucide-react";
+import { useTheme } from "@/hooks/useTheme";
+import type { Theme } from "@/lib/theme";
+import { cn } from "@/lib/utils";
 
 export function SettingsPage() {
   const { data: health } = useQuery({
@@ -11,6 +14,7 @@ export function SettingsPage() {
     queryFn: () => api.health(),
     refetchInterval: 10_000,
   });
+  const { theme, setTheme, resolvedTheme } = useTheme();
 
   return (
     <div className="h-full overflow-y-auto p-6">
@@ -21,6 +25,57 @@ export function SettingsPage() {
             Prism status, integration points, and developer tools.
           </p>
         </div>
+
+        {/* Appearance */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Palette className="h-4 w-4" />
+              <CardTitle className="text-base">Appearance</CardTitle>
+            </div>
+            <CardDescription>
+              Choose how Prism looks. <em>System</em> follows your OS dark/light setting and updates live.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div
+              role="radiogroup"
+              aria-label="Theme"
+              className="grid grid-cols-3 gap-2"
+              data-testid="theme-picker"
+            >
+              <ThemeOption
+                value="light"
+                current={theme}
+                resolved={resolvedTheme}
+                onSelect={setTheme}
+                icon={<Sun className="h-4 w-4" />}
+                label="Light"
+              />
+              <ThemeOption
+                value="dark"
+                current={theme}
+                resolved={resolvedTheme}
+                onSelect={setTheme}
+                icon={<Moon className="h-4 w-4" />}
+                label="Dark"
+              />
+              <ThemeOption
+                value="system"
+                current={theme}
+                resolved={resolvedTheme}
+                onSelect={setTheme}
+                icon={<Monitor className="h-4 w-4" />}
+                label="System"
+                hint={
+                  theme === "system"
+                    ? `Currently ${resolvedTheme}`
+                    : undefined
+                }
+              />
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Status */}
         <Card>
@@ -133,5 +188,54 @@ function IntegrationRow({
         {status === "active" ? "Active" : "Coming soon"}
       </Badge>
     </div>
+  );
+}
+
+function ThemeOption({
+  value,
+  current,
+  resolved,
+  onSelect,
+  icon,
+  label,
+  hint,
+}: {
+  value: Theme;
+  current: Theme;
+  resolved: "light" | "dark";
+  onSelect: (t: Theme) => void;
+  icon: React.ReactNode;
+  label: string;
+  hint?: string;
+}) {
+  const selected = current === value;
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      onClick={() => onSelect(value)}
+      className={cn(
+        "flex flex-col items-start gap-1 rounded-md border p-3 text-left transition-colors",
+        "hover:bg-accent hover:text-accent-foreground",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+        selected
+          ? "border-primary bg-accent text-accent-foreground"
+          : "border-input bg-background",
+      )}
+    >
+      <div className="flex items-center gap-2">
+        {icon}
+        <span className="text-sm font-medium">{label}</span>
+      </div>
+      <span className="text-xs text-muted-foreground">
+        {hint ?? (value === "system" ? "Auto" : value === "light" ? "Always light" : "Always dark")}
+      </span>
+      {/* Hidden helper so the screen reader also announces the resolved value
+          when "system" is selected. */}
+      {value === "system" && selected && (
+        <span className="sr-only">Currently resolving to {resolved}.</span>
+      )}
+    </button>
   );
 }
