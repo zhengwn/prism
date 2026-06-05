@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { formatRelativeTime, cn } from "@/lib/utils";
 import { Inbox as InboxIcon, Star, CheckCircle2 } from "lucide-react";
 import type { KnowledgeItem } from "@/types";
+import { useLanguage } from "@/hooks/useLanguage";
 
 export function InboxPage() {
   const { data: items, isLoading } = useQuery({
@@ -28,6 +29,7 @@ export function InboxPage() {
   const searchQuery = usePrismStore((s) => s.searchQuery);
   const statusFilter = usePrismStore((s) => s.statusFilter);
   const setStatusFilter = usePrismStore((s) => s.setStatusFilter);
+  const { t } = useLanguage();
 
   const filteredItems: KnowledgeItem[] = (items ?? []).filter((it) => {
     if (selectedSourceId && it.sourceId !== selectedSourceId) return false;
@@ -48,7 +50,7 @@ export function InboxPage() {
       {/* Source filter rail */}
       <div className="hidden w-48 shrink-0 border-r bg-card/20 p-3 md:block">
         <h3 className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Filter
+          {t("inbox.filter")}
         </h3>
         <Button
           variant={selectedSourceId === null ? "secondary" : "ghost"}
@@ -56,11 +58,11 @@ export function InboxPage() {
           className="w-full justify-start"
           onClick={() => setSelectedSource(null)}
         >
-          All sources
+          {t("inbox.allSources")}
         </Button>
 
         <h3 className="mt-4 mb-2 px-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Status
+          {t("inbox.status")}
         </h3>
         <div className="space-y-1">
           {(["all", "unread", "starred", "archived"] as const).map((s) => (
@@ -68,16 +70,16 @@ export function InboxPage() {
               key={s}
               variant={statusFilter === s ? "secondary" : "ghost"}
               size="sm"
-              className="w-full justify-start capitalize"
+              className="w-full justify-start"
               onClick={() => setStatusFilter(s)}
             >
-              {s}
+              {t(`statusFilter.${s}`)}
             </Button>
           ))}
         </div>
 
         <h3 className="mt-4 mb-2 px-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Sources
+          {t("inbox.sources")}
         </h3>
         <div className="space-y-1">
           {sources?.map((src) => (
@@ -99,10 +101,10 @@ export function InboxPage() {
       <div className="flex-1 overflow-hidden">
         <div className="flex h-12 items-center justify-between border-b px-4">
           <div>
-            <h2 className="text-sm font-semibold">Inbox</h2>
+            <h2 className="text-sm font-semibold">{t("inbox.title")}</h2>
             <p className="text-xs text-muted-foreground">
-              {filteredItems.length} item{filteredItems.length === 1 ? "" : "s"}
-              {selectedSourceId ? " in selected source" : ""}
+              {t("inbox.count", { count: filteredItems.length })}
+              {selectedSourceId ? t("inbox.inSelectedSource") : ""}
             </p>
           </div>
         </div>
@@ -167,16 +169,15 @@ function ItemRow({ item, selected, onClick }: { item: KnowledgeItem; selected: b
 }
 
 function EmptyState() {
+  const { t } = useLanguage();
   return (
     <div className="flex h-full items-center justify-center p-12">
       <div className="max-w-sm text-center space-y-3">
         <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl prism-gradient">
           <InboxIcon className="h-6 w-6 text-white" />
         </div>
-        <h3 className="text-sm font-semibold">Your inbox is empty</h3>
-        <p className="text-xs text-muted-foreground">
-          Add a source to start collecting AI news. Prism will distill each item into searchable knowledge.
-        </p>
+        <h3 className="text-sm font-semibold">{t("inbox.emptyTitle")}</h3>
+        <p className="text-xs text-muted-foreground">{t("inbox.emptyDescription")}</p>
       </div>
     </div>
   );

@@ -4,6 +4,10 @@ import { BrowserRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import "./styles/globals.css";
+// Side-effect import: initializes i18next with the user's chosen language
+// (or the OS preference on first launch) and registers the React context.
+// Must run before any component calls useTranslation().
+import "./i18n";
 
 const queryClient = new QueryClient({
   defaultOptions: {

@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Rss, Plus, Trash2, ExternalLink } from "lucide-react";
 import type { SourceKind } from "@/types";
 import { formatRelativeTime } from "@/lib/utils";
+import { useLanguage } from "@/hooks/useLanguage";
 
 const kindIcon: Record<SourceKind, string> = {
   rss: "📡",
@@ -32,19 +33,18 @@ export function SourcesPage() {
       qc.invalidateQueries({ queryKey: ["items"] });
     },
   });
+  const { t } = useLanguage();
 
   return (
     <div className="h-full overflow-y-auto p-6">
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Sources</h2>
-          <p className="text-sm text-muted-foreground">
-            RSS, YouTube, podcasts, blogs — Prism will sync and distill on schedule.
-          </p>
+          <h2 className="text-lg font-semibold">{t("sources.title")}</h2>
+          <p className="text-sm text-muted-foreground">{t("sources.description")}</p>
         </div>
         <Button className="gap-1.5">
           <Plus className="h-4 w-4" />
-          Add source
+          {t("sources.addSource")}
         </Button>
       </div>
 
@@ -80,15 +80,15 @@ export function SourcesPage() {
                     </div>
                   </div>
                   <Badge variant={src.enabled ? "default" : "secondary"}>
-                    {src.enabled ? "Active" : "Paused"}
+                    {src.enabled ? t("sources.active") : t("sources.paused")}
                   </Badge>
                 </div>
               </CardHeader>
               <CardContent className="pt-0">
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
                   <span>
-                    {src.itemCount} items · last synced{" "}
-                    {src.lastSyncedAt ? formatRelativeTime(src.lastSyncedAt) : "never"}
+                    {t("sources.itemsCount", { count: src.itemCount })} · {t("sources.lastSynced")}{" "}
+                    {src.lastSyncedAt ? formatRelativeTime(src.lastSyncedAt) : t("sources.lastSyncedNever")}
                   </span>
                   <Button
                     variant="ghost"
@@ -110,14 +110,13 @@ export function SourcesPage() {
 }
 
 function EmptySourcesState() {
+  const { t } = useLanguage();
   return (
     <div className="flex h-64 items-center justify-center rounded-lg border border-dashed">
       <div className="max-w-sm text-center space-y-2">
         <Rss className="mx-auto h-8 w-8 text-muted-foreground" />
-        <p className="text-sm font-medium">No sources yet</p>
-        <p className="text-xs text-muted-foreground">
-          Add an RSS feed, YouTube channel, or podcast URL to start collecting knowledge.
-        </p>
+        <p className="text-sm font-medium">{t("sources.emptyTitle")}</p>
+        <p className="text-xs text-muted-foreground">{t("sources.emptyDescription")}</p>
       </div>
     </div>
   );

@@ -4,11 +4,13 @@ import { Input } from "@/components/ui/input";
 import { usePrismStore } from "@/store";
 import { api } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
+import { useLanguage } from "@/hooks/useLanguage";
 
 export function TopBar() {
   const searchQuery = usePrismStore((s) => s.searchQuery);
   const setSearchQuery = usePrismStore((s) => s.setSearchQuery);
   const qc = useQueryClient();
+  const { t } = useLanguage();
 
   const handleSync = async () => {
     try {
@@ -29,7 +31,7 @@ export function TopBar() {
         <Input
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search knowledge, sources, tags…"
+          placeholder={t("search.placeholder")}
           className="h-8 pl-8 pr-16 text-sm"
         />
         <kbd className="pointer-events-none absolute right-2 top-1/2 hidden h-5 -translate-y-1/2 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium opacity-100 sm:flex">
@@ -42,7 +44,7 @@ export function TopBar() {
       {/* Actions */}
       <Button variant="ghost" size="sm" onClick={handleSync} className="gap-1.5">
         <RefreshCw className="h-3.5 w-3.5" />
-        Sync
+        {t("actions.sync")}
       </Button>
     </header>
   );
