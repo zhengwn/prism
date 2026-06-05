@@ -97,6 +97,25 @@ prism/
 - **API keys (LLM providers, RSS, etc.)** go to OS keychain in v0.2 — never in repo
 - **User data (sources, items) stays on disk locally** — no telemetry in v0.1
 
+## Theme system (v0.1)
+
+Three-state model: `light` / `dark` / `system`. `system` live-follows
+`prefers-color-scheme`. The code is intentionally split into three modules —
+**do not collapse them**, the split is what makes FOUC-free first paint possible:
+
+| File | Role | Loads at |
+|---|---|---|
+| `src/lib/theme-runtime.ts` | Framework-free helpers: `Theme` type, `THEME_STORAGE_KEY` (`"prism-theme"`), `readStoredTheme`, `resolveDark`, `applyTheme`. | Module load (zero deps) |
+| `src/lib/theme-init.ts` | Synchronous FOUC bootstrap. `import` for side effect → read localStorage → apply `.dark` to `<html>`. | First import in `main.tsx`, before React |
+| `src/store/theme.ts` | `useThemeStore` (Zustand) with `setTheme` / `cycleTheme`. Module load registers a `matchMedia` change listener (only re-applies when in `system` mode). | First import by any UI consumer |
+
+`tailwind.config.js` uses `darkMode: ["class"]`; CSS variables in
+`src/styles/globals.css` (`:root` and `.dark`) already define the palette —
+**add new theme tokens there, never hardcode colors in components**.
+
+When extending (e.g. a "high-contrast" mode in v0.2+): extend the `Theme`
+union in `theme-runtime.ts` first, then everything else follows.
+
 ## What agents should NOT do
 
 - Don't modify `tauri.conf.json` productName/identifier without explicit user request
