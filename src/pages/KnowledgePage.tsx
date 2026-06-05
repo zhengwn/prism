@@ -6,10 +6,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Library, Search } from "lucide-react";
 import { usePrismStore } from "@/store";
 import { useMemo } from "react";
+import { useLanguage } from "@/hooks/useLanguage";
 
 export function KnowledgePage() {
   const { data: items, isLoading } = useQuery({ queryKey: ["items"], queryFn: () => api.listItems() });
   const searchQuery = usePrismStore((s) => s.searchQuery);
+  const { t } = useLanguage();
 
   const grouped = useMemo(() => {
     const map = new Map<string, typeof items>();
@@ -25,14 +27,12 @@ export function KnowledgePage() {
     <div className="h-full overflow-y-auto p-6">
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Knowledge Base</h2>
-          <p className="text-sm text-muted-foreground">
-            All distilled knowledge, grouped by source.
-          </p>
+          <h2 className="text-lg font-semibold">{t("knowledge.title")}</h2>
+          <p className="text-sm text-muted-foreground">{t("knowledge.description")}</p>
         </div>
         <Badge variant="secondary" className="gap-1">
           <Library className="h-3 w-3" />
-          {items?.length ?? 0} entries
+          {t("knowledge.entries", { count: items?.length ?? 0 })}
         </Badge>
       </div>
 
@@ -47,7 +47,7 @@ export function KnowledgePage() {
           <div className="text-center space-y-2">
             <Search className="mx-auto h-8 w-8 text-muted-foreground" />
             <p className="text-sm text-muted-foreground">
-              {searchQuery ? "No matches" : "No knowledge yet — add a source and run a sync."}
+              {searchQuery ? t("knowledge.noMatches") : t("knowledge.noKnowledge")}
             </p>
           </div>
         </div>

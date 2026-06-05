@@ -10,6 +10,13 @@
   - Tauri auto-spawns the Python sidecar via `uv run prism-sidecar`
   - Vite dev server on `http://localhost:1420`
   - Sidecar on `http://127.0.0.1:8765`
+- **Recover from a stuck dev server (`dev:clean`):** if `tauri:dev` is killed
+  uncleanly (force-quit, crash, lost terminal), ports 1420 / 8765 may stay
+  bound by orphan vite / prism-sidecar processes and the next `tauri:dev`
+  will fail with `Port 1420 is already in use`. Run `npm run dev:clean` —
+  it kills whoever is holding those two ports and re-launches dev. Use this
+  only when dev is not running cleanly; do not run it while a healthy dev
+  session is up.
 - **Run sidecar only (no Tauri):** `npm run sidecar:dev` — useful for debugging the Python layer
 - **Build:** `npm run tauri:build` (bundles Tauri + frontend; sidecar bundling is a v0.4 task)
 - **Frontend typecheck:** `npx tsc -b`
@@ -67,6 +74,35 @@ prism/
 - **Rust:** edition 2021, rust-version 1.77, idiomatic `tauri::Builder` pattern
 - **Python:** Python 3.11+, type hints everywhere, Pydantic v2 for all data shapes
 - **Commits:** conventional commits (`feat:` / `fix:` / `docs:` / `refactor:` / `chore:`)
+
+## Product invariants (apply to ALL new code, not optional)
+
+These are non-negotiable design rules. Every PR that touches UI or
+content rendering must satisfy them — reviewers should block on
+violations. They are project-specific product decisions, not generic
+best-practice, so they live here rather than in agent memory.
+
+- **i18n is mandatory.** Every user-visible string in `src/components/` and
+  `src/pages/` must go through the `t()` hook from `useLanguage`. Hard-coded
+  English in JSX is a defect, not a style choice. When adding a new key,
+  populate BOTH `src/i18n/en.json` AND `src/i18n/zh.json` in the same
+  commit — never ship an English-only key. The brand string "Prism" and
+  short technical tokens (icons, kbd shortcuts) are exempt; everything
+  else is translated. User-supplied content (article titles, summaries,
+  tags) is NOT translated — that is data, not chrome.
+- **Both themes must work.** Every UI element must look correct in light
+  AND dark mode (and the "system" / follow-OS mode, which spans both).
+  Use semantic Tailwind tokens that map through the CSS variables in
+  `src/styles/globals.css` — `bg-background`, `text-foreground`,
+  `border-border`, `bg-card`, `text-muted-foreground`, etc. NEVER hard-code
+  hex colors, raw `hsl(...)` values, or `dark:` / `light:`-only utility
+  classes. If a new color is needed, add a variable to BOTH `:root` and
+  `.dark` blocks in `globals.css` first, then map it in `tailwind.config.js`.
+- **Adding a language:** see the docstring in `src/i18n/index.ts` for the
+  4-step checklist (json file → Language union → register resource → label).
+- **Adding a theme mode:** extend the `Theme` union in `src/lib/theme.ts`,
+  add the corresponding `.dark` (or `:root`) block in `globals.css` if
+  the resolution is novel, and update the Settings picker.
 
 ## Testing instructions
 

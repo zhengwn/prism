@@ -1,0 +1,127 @@
+{
+  "common": {
+    "appName": "Prism",
+    "appTagline": "把 AI 世界，折射给你"
+  },
+  "nav": {
+    "workspace": "工作区",
+    "system": "系统",
+    "inbox": "收件箱",
+    "knowledge": "知识库",
+    "sources": "信息源",
+    "settings": "设置"
+  },
+  "search": {
+    "placeholder": "搜索知识、信息源、标签…"
+  },
+  "actions": {
+    "sync": "同步"
+  },
+  "sidebar": {
+    "sidecarConnected": "Sidecar 已连接"
+  },
+  "theme": {
+    "cardTitle": "外观",
+    "cardDescription": "选择 Prism 的显示风格。<1>跟随系统</1>会跟着操作系统的明暗设置实时切换。",
+    "optionLight": "浅色",
+    "optionDark": "深色",
+    "optionSystem": "跟随系统",
+    "hintLight": "始终浅色",
+    "hintDark": "始终深色",
+    "hintSystemAuto": "自动",
+    "hintSystemCurrentLight": "当前浅色",
+    "hintSystemCurrentDark": "当前深色"
+  },
+  "language": {
+    "cardTitle": "语言",
+    "cardDescription": "界面语言。切换立即生效。"
+  },
+  "inbox": {
+    "filter": "筛选",
+    "status": "状态",
+    "sources": "信息源",
+    "allSources": "全部信息源",
+    "title": "收件箱",
+    "count_one": "{{count}} 条",
+    "count_other": "{{count}} 条",
+    "inSelectedSource": "（在所选信息源中）",
+    "emptyTitle": "收件箱是空的",
+    "emptyDescription": "添加一个信息源开始收集 AI 资讯。Prism 会把每条内容提炼成可检索的知识。"
+  },
+  "statusFilter": {
+    "all": "全部",
+    "unread": "未读",
+    "starred": "已收藏",
+    "archived": "已归档"
+  },
+  "itemStatus": {
+    "unread": "未读",
+    "read": "已读",
+    "starred": "已收藏",
+    "archived": "已归档"
+  },
+  "knowledge": {
+    "title": "知识库",
+    "description": "所有提炼过的知识，按信息源分组。",
+    "entries_one": "{{count}} 条",
+    "entries_other": "{{count}} 条",
+    "noMatches": "没有匹配项",
+    "noKnowledge": "还没有知识——添加一个信息源并运行一次同步。"
+  },
+  "sources": {
+    "title": "信息源",
+    "description": "RSS、YouTube、播客、博客——Prism 会按计划同步并提炼内容。",
+    "addSource": "添加信息源",
+    "active": "已启用",
+    "paused": "已暂停",
+    "itemsCount_one": "{{count}} 条",
+    "itemsCount_other": "{{count}} 条",
+    "lastSynced": "上次同步",
+    "lastSyncedNever": "从未同步",
+    "emptyTitle": "还没有信息源",
+    "emptyDescription": "添加一个 RSS 订阅、YouTube 频道或播客链接，开始收集知识。"
+  },
+  "settings": {
+    "title": "设置",
+    "description": "Prism 状态、集成接入点与开发者工具。",
+    "sidecarTitle": "Sidecar 状态",
+    "sidecarDescription": "Python sidecar 负责内容抓取、LLM 提炼与 MCP 服务。",
+    "healthy": "运行中",
+    "unreachable": "无法连接",
+    "endpoint": "端点",
+    "version": "版本",
+    "sourcesCount": "信息源数",
+    "itemsCount": "条目数",
+    "uptime": "运行时长",
+    "integrationsTitle": "集成",
+    "integrationsDescription": "把 Prism 接入你的 AI Agent。",
+    "integrationMcp": "MCP Server",
+    "integrationMcpDescription": "把 Prism 的知识以 MCP 工具（read / search / subscribe）暴露出去。",
+    "integrationSkill": "Agent Skill",
+    "integrationSkillDescription": "可复用的 Skill 包（Mavis / OpenCode / Claude Code 等），包装 Prism 的 API。",
+    "integrationLlm": "LLM 提供方",
+    "integrationLlmDescription": "OpenAI / Anthropic / Gemini / 本地 Ollama——选一个用于提炼你的订阅源。",
+    "active": "已启用",
+    "comingSoon": "敬请期待",
+    "developerTitle": "开发者",
+    "developerSidecarLog": "Sidecar 日志",
+    "developerSidecarLogValue": "python/prism_sidecar/ —— 见 logs/server.log",
+    "developerResetData": "重置数据",
+    "developerResetDataValue": "rm ~/.prism/prism.db && restart",
+    "developerDocs": "文档",
+    "developerDocsValue": "docs/ARCHITECTURE.md"
+  },
+  "detail": {
+    "selectTitle": "选一条内容预览",
+    "selectDescription": "从列表里选任意一条，提炼后的知识会显示在这里。",
+    "summary": "摘要",
+    "keyPoints": "关键点",
+    "tags": "标签",
+    "metadata": "元信息",
+    "type": "类型",
+    "author": "作者",
+    "status": "状态",
+    "notFound": "未找到该条目。",
+    "openOriginal": "打开原文"
+  }
+}

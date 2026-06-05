@@ -7,10 +7,12 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatRelativeTime } from "@/lib/utils";
+import { useLanguage } from "@/hooks/useLanguage";
 
 export function DetailPanel() {
   const selectedItemId = usePrismStore((s) => s.selectedItemId);
   const setSelectedItem = usePrismStore((s) => s.setSelectedItem);
+  const { t } = useLanguage();
 
   const { data: item, isLoading } = useQuery({
     queryKey: ["item", selectedItemId],
@@ -26,10 +28,8 @@ export function DetailPanel() {
             <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full prism-gradient">
               <Sparkles className="h-5 w-5 text-white" />
             </div>
-            <p className="text-sm font-medium">Select an item to preview</p>
-            <p className="text-xs text-muted-foreground">
-              Pick anything from the list to see its distilled knowledge here.
-            </p>
+            <p className="text-sm font-medium">{t("detail.selectTitle")}</p>
+            <p className="text-xs text-muted-foreground">{t("detail.selectDescription")}</p>
           </div>
         </div>
       </aside>
@@ -81,7 +81,7 @@ export function DetailPanel() {
               {item.summary && (
                 <section>
                   <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Summary
+                    {t("detail.summary")}
                   </h3>
                   <p className="text-sm leading-relaxed">{item.summary}</p>
                 </section>
@@ -91,7 +91,7 @@ export function DetailPanel() {
               {item.keyPoints && item.keyPoints.length > 0 && (
                 <section>
                   <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Key Points
+                    {t("detail.keyPoints")}
                   </h3>
                   <ul className="space-y-1.5 text-sm">
                     {item.keyPoints.map((p, i) => (
@@ -108,7 +108,7 @@ export function DetailPanel() {
               {item.tags && item.tags.length > 0 && (
                 <section>
                   <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Tags
+                    {t("detail.tags")}
                   </h3>
                   <div className="flex flex-wrap gap-1">
                     {item.tags.map((tag) => (
@@ -123,28 +123,28 @@ export function DetailPanel() {
               {/* Meta */}
               <section>
                 <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Metadata
+                  {t("detail.metadata")}
                 </h3>
                 <dl className="space-y-1 text-xs">
                   <div className="flex justify-between">
-                    <dt className="text-muted-foreground">Type</dt>
+                    <dt className="text-muted-foreground">{t("detail.type")}</dt>
                     <dd className="capitalize">{item.contentType}</dd>
                   </div>
                   {item.author && (
                     <div className="flex justify-between">
-                      <dt className="text-muted-foreground">Author</dt>
+                      <dt className="text-muted-foreground">{t("detail.author")}</dt>
                       <dd className="truncate max-w-[200px]">{item.author}</dd>
                     </div>
                   )}
                   <div className="flex justify-between">
-                    <dt className="text-muted-foreground">Status</dt>
-                    <dd className="capitalize">{item.status}</dd>
+                    <dt className="text-muted-foreground">{t("detail.status")}</dt>
+                    <dd className="capitalize">{t(`itemStatus.${item.status as "unread" | "read" | "starred" | "archived"}`)}</dd>
                   </div>
                 </dl>
               </section>
             </>
           ) : (
-            <p className="text-sm text-muted-foreground">Item not found.</p>
+            <p className="text-sm text-muted-foreground">{t("detail.notFound")}</p>
           )}
         </div>
       </ScrollArea>
@@ -159,7 +159,7 @@ export function DetailPanel() {
             className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-input bg-background px-3 text-xs font-medium hover:bg-accent hover:text-accent-foreground"
           >
             <ExternalLink className="h-3.5 w-3.5" />
-            Open original
+            {t("detail.openOriginal")}
           </a>
         </div>
       )}
