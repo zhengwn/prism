@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { X, ExternalLink, Sparkles } from "lucide-react";
 import { usePrismStore } from "@/store";
 import { useQuery } from "@tanstack/react-query";
@@ -6,13 +7,49 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { formatRelativeTime } from "@/lib/utils";
+import { formatRelativeTime, cn } from "@/lib/utils";
 import { useLanguage } from "@/hooks/useLanguage";
+import type { KnowledgeItem } from "@/types";
+
+type Lang = "zh" | "en";
+
+/**
+ * Pick the title/summary to render for the current language preference.
+ * The `force` argument lets the explicit EN/中 toggle in the header
+ * override the UI language.
+ */
+function pickLocalized(
+  item: KnowledgeItem,
+  lang: Lang,
+): { title: string; summary?: string; keyPoints: string[]; tags: string[] } {
+  if (lang === "en") {
+    return {
+      title: item.titleEn || item.title,
+      summary: item.summaryEn ?? item.summary,
+      keyPoints: item.keyPoints ?? item.keyPointsZh ?? [],
+      tags: item.tagsZh ?? item.tags ?? [],
+    };
+  }
+  return {
+    title: item.titleZh || item.titleEn || item.title,
+    summary: item.summaryZh ?? item.summaryEn ?? item.summary,
+    keyPoints: item.keyPointsZh ?? item.keyPoints ?? [],
+    tags: item.tagsZh ?? item.tags ?? [],
+  };
+}
 
 export function DetailPanel() {
   const selectedItemId = usePrismStore((s) => s.selectedItemId);
   const setSelectedItem = usePrismStore((s) => s.setSelectedItem);
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
+
+  /**
+   * The active language for the item preview. Defaults to the UI
+   * language but the user can flip it with the EN / 中 buttons to peek
+   * at the other version.
+   */
+  const [overrideLang, setOverrideLang] = useState<Lang | null>(null);
+  const activeLang: Lang = overrideLang ?? (language === "en" ? "en" : "zh");
 
   const { data: item, isLoading } = useQuery({
     queryKey: ["item", selectedItemId],
@@ -36,6 +73,14 @@ export function DetailPanel() {
     );
   }
 
+  const localized = item ? pickLocalized(item, activeLang) : null;
+  const hasBothLanguages = item
+    ? Boolean(item.titleEn) && Boolean(item.titleZh) &&
+      (item.titleEn !== item.titleZh)
+    : false;
+  const hasEn = item ? Boolean(item.titleEn) : false;
+  const hasZh = item ? Boolean(item.titleZh) : false;
+
   return (
     <aside className="hidden h-full w-96 shrink-0 flex-col border-l bg-card/30 lg:flex">
       {/* Header */}
@@ -49,7 +94,7 @@ export function DetailPanel() {
           ) : (
             <>
               <h2 className="line-clamp-2 text-base font-semibold leading-tight">
-                {item?.title}
+                {localized?.title}
               </h2>
               <p className="text-xs text-muted-foreground">
                 {item?.sourceName} · {item && formatRelativeTime(item.publishedAt)}
@@ -57,14 +102,37 @@ export function DetailPanel() {
             </>
           )}
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7 shrink-0"
-          onClick={() => setSelectedItem(null)}
-        >
-          <X className="h-4 w-4" />
-        </Button>
+        <div className="flex shrink-0 items-center gap-1">
+          {/* Bilingual toggle — only render when both languages exist. */}
+          {(hasEn && hasZh) && (
+            <div
+              role="group"
+              aria-label="Language"
+              className="inline-flex rounded-md border border-input bg-background p-0.5"
+              data-testid="lang-toggle"
+            >
+              <LangPill
+                label={t("detail.showEn")}
+                active={activeLang === "en"}
+                onClick={() => setOverrideLang("en")}
+              />
+              <LangPill
+                label={t("detail.showZh")}
+                active={activeLang === "zh"}
+                onClick={() => setOverrideLang("zh")}
+              />
+            </div>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            onClick={() => setSelectedItem(null)}
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
       <ScrollArea className="flex-1">
@@ -78,23 +146,23 @@ export function DetailPanel() {
           ) : item ? (
             <>
               {/* Summary */}
-              {item.summary && (
+              {localized?.summary && (
                 <section>
                   <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     {t("detail.summary")}
                   </h3>
-                  <p className="text-sm leading-relaxed">{item.summary}</p>
+                  <p className="text-sm leading-relaxed">{localized.summary}</p>
                 </section>
               )}
 
               {/* Key points */}
-              {item.keyPoints && item.keyPoints.length > 0 && (
+              {localized && localized.keyPoints.length > 0 && (
                 <section>
                   <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     {t("detail.keyPoints")}
                   </h3>
                   <ul className="space-y-1.5 text-sm">
-                    {item.keyPoints.map((p, i) => (
+                    {localized.keyPoints.map((p, i) => (
                       <li key={i} className="flex gap-2">
                         <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-primary" />
                         <span>{p}</span>
@@ -104,19 +172,26 @@ export function DetailPanel() {
                 </section>
               )}
 
-              {/* Tags */}
-              {item.tags && item.tags.length > 0 && (
+              {/* Tags — always Chinese (tagsZh), per product invariant. */}
+              {localized && localized.tags.length > 0 && (
                 <section>
                   <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     {t("detail.tags")}
                   </h3>
                   <div className="flex flex-wrap gap-1">
-                    {item.tags.map((tag) => (
+                    {localized.tags.map((tag) => (
                       <Badge key={tag} variant="secondary">
                         {tag}
                       </Badge>
                     ))}
                   </div>
+                </section>
+              )}
+
+              {/* Pending-distillation hint */}
+              {!item.distilledAt && (
+                <section className="rounded-md border border-dashed border-muted-foreground/30 bg-muted/40 p-3 text-xs text-muted-foreground">
+                  {t("inbox.pendingDistill")}
                 </section>
               )}
 
@@ -142,6 +217,8 @@ export function DetailPanel() {
                   </div>
                 </dl>
               </section>
+
+              {hasBothLanguages && null}
             </>
           ) : (
             <p className="text-sm text-muted-foreground">{t("detail.notFound")}</p>
@@ -164,5 +241,32 @@ export function DetailPanel() {
         </div>
       )}
     </aside>
+  );
+}
+
+function LangPill({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+        active
+          ? "bg-accent text-accent-foreground"
+          : "text-muted-foreground hover:text-foreground",
+      )}
+      aria-pressed={active}
+      data-active={active}
+    >
+      {label}
+    </button>
   );
 }

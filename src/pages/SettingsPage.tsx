@@ -1,8 +1,11 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Trans } from "react-i18next";
 import { api, SIDECAR_BASE } from "@/lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import {
   Cpu,
@@ -13,6 +16,13 @@ import {
   Moon,
   Monitor,
   Languages,
+  Sparkles,
+  KeyRound,
+  RefreshCw,
+  X,
+  Loader2,
+  Check,
+  AlertCircle,
 } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
 import type { Theme } from "@/lib/theme";
@@ -141,6 +151,9 @@ export function SettingsPage() {
           </CardContent>
         </Card>
 
+        {/* AI Distillation — v0.2a */}
+        <AiSection />
+
         {/* Status */}
         <Card>
           <CardHeader>
@@ -221,6 +234,249 @@ export function SettingsPage() {
             <Row label={t("settings.developerDocs")} value={t("settings.developerDocsValue")} mono />
           </CardContent>
         </Card>
+      </div>
+    </div>
+  );
+}
+
+function AiSection() {
+  const { t } = useLanguage();
+  const qc = useQueryClient();
+  const { data: status } = useQuery({
+    queryKey: ["apiKeyStatus"],
+    queryFn: () => api.getApiKeyStatus(),
+  });
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [feedback, setFeedback] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+
+  const clearMut = useMutation({
+    mutationFn: () => api.clearApiKey(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["apiKeyStatus"] });
+      setFeedback({ kind: "success", text: t("settings.apiKeyStatus.notConfigured") });
+      window.setTimeout(() => setFeedback(null), 2_500);
+    },
+    onError: (e) => {
+      console.error("[prism] clearApiKey failed:", e);
+      setFeedback({ kind: "error", text: t("inbox.syncError") });
+    },
+  });
+
+  const syncMut = useMutation({
+    mutationFn: () => api.syncAll(),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["items"] });
+      qc.invalidateQueries({ queryKey: ["sources"] });
+      setFeedback({
+        kind: "success",
+        text: t("inbox.syncResult", { new: r.itemsNew, distilled: r.itemsDistilled }),
+      });
+      window.setTimeout(() => setFeedback(null), 3_000);
+    },
+    onError: (e) => {
+      console.error("[prism] syncAll failed:", e);
+      setFeedback({ kind: "error", text: t("inbox.syncError") });
+    },
+  });
+
+  const configured = status?.configured ?? false;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-4 w-4" />
+            <CardTitle className="text-base">{t("settings.aiSection")}</CardTitle>
+          </div>
+          <Badge variant={configured ? "default" : "secondary"} data-testid="api-key-status" data-configured={configured}>
+            {configured ? `✅ ${t("settings.apiKeyStatus.configured")}` : `❌ ${t("settings.apiKeyStatus.notConfigured")}`}
+          </Badge>
+        </div>
+        <CardDescription>{t("settings.aiDescription")}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            onClick={() => setDialogOpen(true)}
+            data-testid="set-api-key"
+          >
+            <KeyRound className="h-3.5 w-3.5" />
+            {t("settings.setApiKey")}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="gap-1.5 text-muted-foreground"
+            onClick={() => clearMut.mutate()}
+            disabled={!configured || clearMut.isPending}
+          >
+            {t("settings.clearApiKey")}
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">{t("settings.apiKeyDescription")}</p>
+
+        <Separator />
+
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs text-muted-foreground">{t("settings.aiDescription")}</p>
+          <Button
+            size="sm"
+            variant="default"
+            className="gap-1.5"
+            onClick={() => syncMut.mutate()}
+            disabled={syncMut.isPending}
+            data-testid="manual-sync"
+          >
+            {syncMut.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5" />
+            )}
+            {syncMut.isPending ? t("settings.manualSyncRunning") : t("settings.manualSync")}
+          </Button>
+        </div>
+
+        {feedback && (
+          <div
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
+              feedback.kind === "success"
+                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"
+                : "border-destructive/40 bg-destructive/10 text-destructive",
+            )}
+            role="status"
+            aria-live="polite"
+            data-testid="ai-feedback"
+          >
+            {feedback.kind === "success" ? (
+              <Check className="h-3 w-3" />
+            ) : (
+              <AlertCircle className="h-3 w-3" />
+            )}
+            {feedback.text}
+          </div>
+        )}
+      </CardContent>
+
+      <ApiKeyDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        onSaved={() => {
+          qc.invalidateQueries({ queryKey: ["apiKeyStatus"] });
+          setFeedback({ kind: "success", text: t("settings.apiKeyStatus.configured") });
+          window.setTimeout(() => setFeedback(null), 2_500);
+        }}
+      />
+    </Card>
+  );
+}
+
+function ApiKeyDialog({
+  open,
+  onOpenChange,
+  onSaved,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  onSaved: () => void;
+}) {
+  const { t } = useLanguage();
+  const [key, setKey] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const saveMut = useMutation({
+    mutationFn: (k: string) => api.setApiKey(k),
+    onSuccess: () => {
+      setKey("");
+      setError(null);
+      onOpenChange(false);
+      onSaved();
+    },
+    onError: (e) => {
+      console.error("[prism] setApiKey failed:", e);
+      setError(t("inbox.syncError"));
+    },
+  });
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!key.trim()) {
+      setError(t("inbox.syncError"));
+      return;
+    }
+    setError(null);
+    saveMut.mutate(key.trim());
+  };
+
+  const onClose = () => {
+    if (saveMut.isPending) return;
+    setKey("");
+    setError(null);
+    onOpenChange(false);
+  };
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={onClose}
+      data-testid="api-key-dialog"
+    >
+      <div
+        className="w-full max-w-md rounded-lg border bg-card text-card-foreground shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="api-key-title"
+      >
+        <form onSubmit={onSubmit}>
+          <div className="flex items-center justify-between border-b p-4">
+            <h3 id="api-key-title" className="text-sm font-semibold">
+              {t("settings.apiKeyDialog.title")}
+            </h3>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={onClose}
+              aria-label="Close"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="space-y-3 p-4">
+            <p className="text-xs text-muted-foreground">{t("settings.apiKeyDialog.description")}</p>
+            <Input
+              autoFocus
+              type="password"
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              placeholder={t("settings.apiKeyDialog.placeholder")}
+              disabled={saveMut.isPending}
+              data-testid="api-key-input"
+            />
+            {error && (
+              <p className="text-xs text-destructive" role="alert">
+                {error}
+              </p>
+            )}
+          </div>
+          <div className="flex items-center justify-end gap-2 border-t p-4">
+            <Button type="button" variant="ghost" onClick={onClose} disabled={saveMut.isPending}>
+              {t("settings.apiKeyDialog.cancel")}
+            </Button>
+            <Button type="submit" disabled={saveMut.isPending} data-testid="api-key-submit">
+              {saveMut.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {t("settings.apiKeyDialog.submit")}
+            </Button>
+          </div>
+        </form>
       </div>
     </div>
   );
