@@ -22,12 +22,13 @@ use std::thread;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime};
 
+use crate::secrets;
+
 pub const SIDECAR_HOST: &str = "127.0.0.1";
 pub const SIDECAR_PORT: u16 = 8765;
 pub const SIDECAR_URL: &str = "http://127.0.0.1:8765";
 
 /// Optional child handle — kept around so we can kill it on shutdown later.
-#[allow(dead_code)]
 pub struct SidecarState(pub Mutex<Option<std::process::Child>>);
 
 #[derive(Serialize)]
@@ -53,11 +54,25 @@ pub fn spawn<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .map(|p| p.join("..").join("python"))
         .unwrap_or_else(|_| std::path::PathBuf::from("../python"));
 
+    // Read the DeepSeek API key from the keychain BEFORE we spawn. A None
+    // result is fine — the sidecar boots either way, the distiller just logs
+    // "not configured" and skips.
+    let api_key = secrets::read_deepseek_key(app);
+
     let mut cmd = Command::new("uv");
     cmd.args(["run", "--directory", python_dir.to_str().unwrap_or("../python"), "prism-sidecar"]);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.stdin(Stdio::null());
+
+    // Inject API key into the sidecar's environment, if we have one. The
+    // Python side picks it up at startup and plumbs it into the distiller.
+    if let Some(key) = api_key {
+        cmd.env(secrets::ENV_DEEPSEEK_API_KEY, key);
+        eprintln!("[prism] injected {} from keychain", secrets::ENV_DEEPSEEK_API_KEY);
+    } else {
+        eprintln!("[prism] no API key in keychain — distiller will be disabled");
+    }
 
     // On Windows, hide the console window of the child process.
     #[cfg(windows)]
@@ -97,4 +112,33 @@ pub fn spawn<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     app.manage(SidecarState(Mutex::new(Some(child))));
 
     Ok(())
+}
+
+/// Best-effort shutdown for the sidecar child process.
+///
+/// v0.2a: we just `kill()` — the Python process exits and APScheduler's loop
+/// is torn down by the OS. v0.2b will send a SIGTERM first (or hit a
+/// `/shutdown` HTTP endpoint) and give the scheduler a moment to drain.
+pub fn shutdown<R: Runtime>(app: &AppHandle<R>) {
+    let state = match app.try_state::<SidecarState>() {
+        Some(s) => s,
+        None => return, // sidecar never started
+    };
+
+    let mut guard = match state.0.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("[prism] sidecar mutex poisoned during shutdown: {e}");
+            return;
+        }
+    };
+
+    if let Some(mut child) = guard.take() {
+        match child.kill() {
+            Ok(()) => eprintln!("[prism] sidecar killed"),
+            Err(e) => eprintln!("[prism] sidecar kill failed: {e}"),
+        }
+        // Reap so we don't leak a zombie.
+        let _ = child.wait();
+    }
 }

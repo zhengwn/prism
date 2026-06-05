@@ -15,7 +15,8 @@
     "tauri:build": "tauri build",
     "sidecar:dev": "cd python && uv run prism-sidecar",
     "sidecar:install": "cd python && uv sync",
-    "smoke": "bash scripts/smoke.sh"
+    "smoke": "bash scripts/smoke.sh",
+    "dev:keychain-check": "cd src-tauri && cargo test --test keychain_smoke -- --nocapture && cargo run --example dev_keychain_check"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.59.0",
