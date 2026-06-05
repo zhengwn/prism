@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B1020"/>
+      <stop offset="1" stop-color="#1A1340"/>
+    </linearGradient>
+    <linearGradient id="prism" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.05"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded background -->
+  <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224" fill="url(#bg)"/>
+
+  <!-- Incoming white light beam (from upper left, hits left side of prism) -->
+  <line x1="120" y1="280" x2="500" y2="512"
+        stroke="#FFFFFF" stroke-width="14" stroke-linecap="round" opacity="0.95"/>
+  <circle cx="120" cy="280" r="10" fill="#FFFFFF" opacity="0.9"/>
+
+  <!-- Equilateral prism (apex right, base left) -->
+  <!-- Vertices: top (320,260) bottom (320,764) apex right (820,512) -->
+  <polygon points="320,260 320,764 820,512"
+           fill="url(#prism)"
+           stroke="#FFFFFF" stroke-width="22" stroke-linejoin="round"/>
+
+  <!-- Subtle inner highlight on prism's left edge -->
+  <line x1="320" y1="260" x2="320" y2="764"
+        stroke="#FFFFFF" stroke-width="2" opacity="0.35"/>
+
+  <!-- Refracted spectrum beams fanning out from the apex (820,512) -->
+  <!-- Each beam ends at a small glowing dot -->
+  <g stroke-width="14" stroke-linecap="round" fill="none">
+    <line x1="820" y1="512" x2="900" y2="320" stroke="#A855F7"/>
+    <line x1="820" y1="512" x2="920" y2="430" stroke="#3B82F6"/>
+    <line x1="820" y1="512" x2="920" y2="512" stroke="#10B981"/>
+    <line x1="820" y1="512" x2="920" y2="600" stroke="#F59E0B"/>
+    <line x1="820" y1="512" x2="900" y2="720" stroke="#EF4444"/>
+  </g>
+
+  <!-- Glowing dots at the end of each spectrum beam -->
+  <g>
+    <circle cx="900" cy="320" r="14" fill="#A855F7"/>
+    <circle cx="920" cy="430" r="14" fill="#3B82F6"/>
+    <circle cx="920" cy="512" r="14" fill="#10B981"/>
+    <circle cx="920" cy="600" r="14" fill="#F59E0B"/>
+    <circle cx="900" cy="720" r="14" fill="#EF4444"/>
+  </g>
+</svg>
