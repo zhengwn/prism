@@ -1,5 +1,7 @@
 # Prism — Architecture
 
+> 截至 v0.2a。v0.3 之后会加 MCP server、sqlite-vec 语义搜索、Skill bundle 等。
+
 ## 总览
 
 ```
@@ -7,30 +9,46 @@
 │  Tauri Shell (Rust)                                           │
 │  ┌──────────────────┐  IPC (Tauri commands)  ┌────────────┐  │
 │  │  WebView         │◄──────────────────────►│  Rust Core │  │
-│  │  React + TS UI   │                        │  (window,  │  │
-│  │                  │                        │   lifecycle│  │
-│  └────────┬─────────┘                        │   sidecar) │  │
-│           │                                  └─────┬──────┘  │
+│  │  React + TS UI   │                        │            │  │
+│  │                  │   invoke()             │  - window  │  │
+│  │  - Sync 按钮     │                        │  - lifecycle│ │
+│  │  - Add Source    │                        │  - keyring  │  │
+│  │  - 双语显示      │                        │  - sidecar  │  │
+│  │  - Settings      │                        │    (spawn   │  │
+│  │                  │                        │     + env   │  │
+│  │                  │                        │     + kill) │  │
+│  └────────┬─────────┘                        └─────┬──────┘  │
 └───────────┼────────────────────────────────────────┼─────────┘
-            │ HTTP (loopback)                       │ std::process::Command
+            │ HTTP (loopback 127.0.0.1:8765)        │ std::process::Command
             ▼                                        ▼
-   http://127.0.0.1:8765              ┌──────────────────────────┐
-            │                         │  Python Sidecar          │
-            │                         │  (FastAPI + uvicorn)     │
-            ▼                         │  ┌────────────────────┐  │
-   /api/sources, /api/items,          │  │  /api/*  REST       │  │
-   /api/sync, /health                 │  │  MCP server (stdio)│  │
-                                      │  │  LLM pipeline      │  │
-                                      │  └────────────────────┘  │
-                                      └──────────────────────────┘
-                                                  │
-                                                  ▼
-                                       ┌──────────────────────┐
-                                       │  Storage (v0.2)      │
-                                       │  - SQLite (aiosqlite)│
-                                       │  - sqlite-vec        │
-                                       │  - file blobs        │
-                                       └──────────────────────┘
+                              ┌──────────────────────────┐
+                              │  Python Sidecar          │
+                              │  (FastAPI + uvicorn)     │
+                              │                          │
+                              │  REST:                   │
+                              │   /health                │
+                              │   /api/sources (CRUD)    │
+                              │   /api/sources/{id}      │
+                              │   /api/items             │
+                              │   /api/sync, /api/sync/* │
+                              │   /api/sync/history      │
+                              │                          │
+                              │  Pipeline:               │
+                              │   fetchers/ (rss + hn)   │
+                              │   distillers/ (deepseek) │
+                              │   pipeline/sync          │
+                              │   scheduler              │
+                              └──────────┬───────────────┘
+                                         │ aiosqlite
+                                         ▼
+                              ┌──────────────────────────┐
+                              │  ~/.prism/data.db        │
+                              │  - sources               │
+                              │  - items (bilingual)     │
+                              │  - sync_log              │
+                              │  - sync_jobs             │
+                              │  (sqlite-vec 留 v0.5)    │
+                              └──────────────────────────┘
 ```
 
 ## 进程边界
@@ -42,94 +60,241 @@
   - Python 端可以独立升级（不重新打包 Tauri）
 - 缺点：
   - 多一个进程
-  - 跨平台打包需要打两个东西
+  - 跨平台打包需要打两个东西（v0.4 处理）
 
 ## 数据流
 
-### 抓取 + 提炼（v0.2 之后）
+### 抓取 + 提炼（v0.2a，已实现）
 
 ```
-[Source URL] → fetcher (httpx/yt-dlp) → raw content
-            → distiller (litellm) → KnowledgeItem
-            → store (aiosqlite) → [queryable]
+[Source]   → fetcher.fetch(source)  → RawItem[]
+              ├─ RSSFetcher:     feedparser + httpx, retry/backoff, HTML strip
+              └─ HackerNewsFetcher: Algolia API，多关键词池去重
+                ↓
+            pipeline.run_source_sync(source)
+              ├─ 遍历 RawItem
+              ├─ items.url unique → skip 已存在
+              ├─ insert raw item (distilled_at=NULL)
+              └─ if distiller configured:
+                   DeepSeekDistiller.distill(raw)
+                     ├─ litellm.acompletion → JSON {title_zh, summary_zh, key_points_zh, tags_zh}
+                     ├─ parse + validate
+                     └─ update_item(item.id, distilled)
+                ↓
+            SQLite (sources, items, sync_log)
+                ↓
+            [GET /api/items?source_id=&status=&q=&limit=&offset=] → React UI
 ```
 
-### Agent 调用（v0.3）
+### 手动 vs 自动同步
+
+- **手动**：`POST /api/sync`（全源）或 `POST /api/sync/{source_id}`（单源）→ 返回 `SyncResult`
+  - 并发保护：in-memory `_inflight_jobs` set，第二次请求返回 409 Conflict
+- **自动**：APScheduler `AsyncIOScheduler` 在 FastAPI lifespan 启动
+  - `cron(hour=9, timezone="Asia/Shanghai")` 每天 9 点跑 `run_all_sync()`
+  - 单源失败不影响其他源（每个源独立 `try/except` + 写 `sync_log.error`）
+
+### 蒸馏失败处理
+
+- 提炼失败时 item **仍写入 DB**（`distilled_at=NULL`），UI 显示「待提炼」角标
+- 失败原因：API key 未配置 / 网络错误 / JSON 解析失败 / rate limit
+- 失败时 `sync_log.items_distilled` 不递增，但 `items_new` 仍计
+
+### Agent 调用（v0.3，未实现）
 
 ```
 [Claude Code / Cursor] → MCP client (stdio) → prism mcp server
-                                            → [search, read, subscribe tools]
-                                            → returns KnowledgeItem
+                                             → [search, read, subscribe tools]
+                                             → returns KnowledgeItem
+```
+
+## API 契约（v0.2a）
+
+### Sources
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | `/api/sources` | — | `Source[]` |
+| POST | `/api/sources` | `SourceCreate` | `Source` |
+| GET | `/api/sources/{id}` | — | `Source` |
+| **PATCH** | `/api/sources/{id}` | `SourcePatch` | `Source`（v0.2a 新增） |
+| DELETE | `/api/sources/{id}` | — | `{ok: true}` |
+
+### Items
+
+| Method | Path | Query | Returns |
+|---|---|---|---|
+| GET | `/api/items` | `source_id, status, q, limit, offset` | `KnowledgeItem[]` |
+| GET | `/api/items/{id}` | — | `KnowledgeItem` |
+
+### Sync
+
+| Method | Path | Returns | 备注 |
+|---|---|---|---|
+| POST | `/api/sync` | `SyncResult` | 全源；v0.2a 真跑（v0.1 是 no-op） |
+| POST | `/api/sync/{source_id}` | `SyncResult` | 单源 |
+| GET | `/api/sync/{job_id}` | `SyncJob` | 查 job 状态 |
+| GET | `/api/sync/history?limit=10` | `SyncLog[]` | 历史 |
+
+`SyncResult` 字段：`jobId, status, startedAt, finishedAt, sourcesTotal, sourcesDone, itemsNew, itemsDistilled, error`（camelCase 通过 `_CamelBase` 转换）。
+
+### 双语 KnowledgeItem
+
+```typescript
+interface KnowledgeItem {
+  // 兼容字段（display 用）
+  title: string;            // = titleZh ?? titleEn
+  summary?: string;         // = summaryZh ?? summaryEn
+  keyPoints?: string[];     // = keyPointsZh
+  tags?: string[];          // = tagsZh
+  // 双语（持久化）
+  titleEn: string;
+  titleZh?: string;
+  summaryEn?: string;
+  summaryZh?: string;
+  keyPointsZh?: string[];
+  tagsZh?: string[];
+  // 状态
+  distilledAt?: string;     // 提炼完成时间
+  // ... 其他 meta
+}
 ```
 
 ## 关键设计决策
 
 | 决策 | 选 | 理由 |
 |------|----|----|
-| 桌面壳 | Tauri 2 | 小、快、原生 |
+| 桌面壳 | Tauri 2 | 小、快、原生；安装包 < 30MB |
 | 前端 | React + TS + Vite | 生态最熟 |
-| UI 库 | shadcn 风格（手写）| 可定制、零运行时 |
+| UI 库 | shadcn 风格（手写） | 可定制、零运行时 |
 | 状态 | Zustand | 轻量、TS 友好 |
 | 数据获取 | TanStack Query | cache / refetch 完备 |
 | 后端 | Python 3.11+ FastAPI | AI 生态最强 |
 | 包管理 | uv | 极快、取代 pip/poetry |
-| LLM 抽象 | litellm | 一行切各家 |
-| 存储 | SQLite + sqlite-vec | 本地优先、零部署 |
+| LLM 抽象 | litellm | 一行切各家（DeepSeek / OpenAI / Ollama…） |
+| 存储 | SQLite (aiosqlite) | 本地优先、零部署 |
+| 抓取 | httpx + feedparser | 异步、RSS 库成熟 |
+| 调度 | APScheduler | 进程内 cron，够用；不引入 arq 等重组件 |
+| 密钥 | OS keychain (keyring crate) | 不入 git、不明文 |
 | 跨进程 | HTTP loopback | 简单、可调试 |
+| 双语存储 | 显式 `*_en` / `*_zh` 字段 | 保留搜索英文能力 + 切换语言可看原文 |
 
-## 目录结构
+## 目录结构（v0.2a）
 
 ```
 prism/
-├── src/                       # React 前端
-│   ├── components/
-│   │   ├── ui/                # shadcn 风格基础组件
-│   │   └── layout/            # 三栏布局
-│   ├── pages/                 # 路由页面
-│   ├── lib/                   # utils / api client
-│   ├── store/                 # Zustand
-│   ├── styles/                # 全局样式
-│   ├── types/                 # 共享类型
-│   ├── App.tsx
-│   └── main.tsx
-├── src-tauri/                 # Tauri Rust 端
+├── src/                      # React 前端
+│   ├── components/{ui,layout}/
+│   ├── pages/                # InboxPage, KnowledgePage, SourcesPage, SettingsPage
+│   ├── lib/                  # api.ts, utils.ts, theme.ts, language.ts
+│   ├── store/                # Zustand
+│   ├── i18n/                 # en.json, zh.json
+│   ├── styles/               # globals.css
+│   ├── types/                # 共享 TS 类型
+│   ├── App.tsx, main.tsx
+│   └── __tests__/            # Vitest
+├── src-tauri/                # Tauri 2 Rust 端
 │   ├── src/
-│   │   ├── main.rs            # 入口
-│   │   ├── lib.rs             # Builder
-│   │   └── sidecar.rs         # Python 进程管理
-│   ├── Cargo.toml
-│   ├── tauri.conf.json
-│   ├── capabilities/          # 权限配置
-│   └── icons/                 # 应用图标
-├── python/                    # Python sidecar
+│   │   ├── main.rs           # 入口
+│   │   ├── lib.rs            # Builder + keyring + RunEvent
+│   │   ├── sidecar.rs        # Python 进程管理 + env 注入
+│   │   └── secrets.rs        # OS keychain 封装（v0.2a 新增）
+│   ├── capabilities/         # 权限（含 keyring）
+│   ├── tests/keychain_smoke.rs  # 真 keychain 集成测试
+│   └── examples/dev_keychain_check.rs
+├── python/                   # Python sidecar
 │   ├── pyproject.toml
+│   ├── pytest.ini
 │   ├── prism_sidecar/
-│   │   ├── __main__.py        # 入口
-│   │   ├── app.py             # FastAPI app
-│   │   ├── models.py          # Pydantic
-│   │   ├── store.py           # 数据层
-│   │   └── data/fixtures.py   # v0.1 假数据
-│   └── README.md
-├── docs/                      # 设计文档
-│   ├── ROADMAP.md
-│   └── ARCHITECTURE.md
-├── scripts/                   # 仓库脚本
-├── package.json
-├── tsconfig.json
-├── vite.config.ts
-├── tailwind.config.js
-├── BRAND.md                   # 品牌指南
-├── README.md
-└── .gitignore
+│   │   ├── __main__.py       # CLI 入口
+│   │   ├── app.py            # FastAPI 路由
+│   │   ├── models.py         # Pydantic v2
+│   │   ├── db.py             # aiosqlite + schema migration（v0.2a 新增）
+│   │   ├── store.py          # SQLite-backed CRUD
+│   │   ├── scheduler.py      # APScheduler 集成（v0.2a 新增）
+│   │   ├── config.py         # env 读取
+│   │   ├── fetchers/         # 多源抓取（v0.2a 新增）
+│   │   │   ├── base.py       # Fetcher Protocol + RawItem
+│   │   │   ├── rss.py        # feedparser + httpx
+│   │   │   ├── hackernews.py # Algolia API
+│   │   │   └── registry.py   # kind → Fetcher 映射
+│   │   ├── distillers/       # LLM 提炼（v0.2a 新增）
+│   │   │   ├── base.py       # Distiller Protocol + DistilledItem
+│   │   │   └── deepseek.py   # litellm 抽象
+│   │   ├── pipeline/         # 同步编排（v0.2a 新增）
+│   │   │   └── sync.py       # run_source_sync
+│   │   └── data/fixtures.py  # 5 个种子源
+│   └── tests/                # pytest 38 个 case
+├── docs/                     # ROADMAP, ARCHITECTURE
+├── scripts/                  # smoke.sh / smoke.ps1
+├── assets/                   # logo / icons
+├── BRAND.md, AGENTS.md, README.md
+└── package.json
 ```
+
+## 数据 Schema
+
+```sql
+CREATE TABLE sources (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,            -- SourceKind enum
+  url TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  config_json TEXT,              -- 源特定配置
+  last_synced_at TEXT,           -- ISO8601
+  last_error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE items (
+  id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL,
+  url TEXT NOT NULL UNIQUE,      -- 用于去重
+  title_en TEXT NOT NULL,
+  title_zh TEXT,
+  summary_en TEXT,
+  summary_zh TEXT,
+  key_points_zh TEXT,            -- JSON array
+  tags_zh TEXT,                  -- JSON array
+  author TEXT,
+  published_at TEXT NOT NULL,
+  fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+  distilled_at TEXT,
+  status TEXT NOT NULL DEFAULT 'unread',
+  content_type TEXT NOT NULL,
+  metadata_json TEXT,
+  FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_items_source ON items(source_id);
+CREATE INDEX idx_items_published ON items(published_at DESC);
+CREATE INDEX idx_items_status ON items(status);
+
+CREATE TABLE sync_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id TEXT,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  items_new INTEGER DEFAULT 0,
+  items_distilled INTEGER DEFAULT 0,
+  error TEXT
+);
+
+CREATE TABLE sync_jobs (...);    -- job_id → 状态跟踪
+CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT);  -- 迁移版本
+```
+
+**数据文件位置**：`~/.prism/data.db`（可用 `PRISM_DATA_DIR` env 覆盖）。
 
 ## 安全模型
 
-- **本地优先**：所有数据存本地 SQLite（v0.2）
+- **本地优先**：所有数据存本地 SQLite
 - **loopback only**：Python sidecar 只听 `127.0.0.1`，不暴露公网
 - **Tauri capabilities**：webview 默认不能调系统命令，必须显式 allow
 - **CSP**：dev 阶段关掉，prod 阶段收紧（v0.4）
-- **Secrets**：API key 存 OS keychain，不入 git（v0.2）
+- **Secrets**：API key 存 OS keychain（v0.2a 已实现，**前端永远拿不到 key 值**，只能查 `{configured: bool}`）
+- **CORS allowlist**：Tauri + Vite origins only
+- **sidecar env 注入**：Tauri 启动时从 keychain 读 key → `cmd.env("DEEPSEEK_API_KEY", key)` 注入子进程；key 不会出现在 settings 配置文件里
 
 ## 性能预算
 
@@ -138,3 +303,14 @@ prism/
 - 单条 search 查询：< 200ms
 - 内存占用：< 300MB idle（vs Electron 500MB+）
 - 安装包大小：< 30MB（vs Electron 150MB+）
+
+## 测试覆盖（v0.2a）
+
+| 层级 | 工具 | 覆盖 |
+|---|---|---|
+| Python fetcher/distiller/store/sync/api | pytest 38 case | rss 5 / hn 3 / distiller 8 / store 8 / sync 5 / api 9 |
+| Rust keychain | `cargo test --test keychain_smoke` | 2 case（真 macOS Keychain roundtrip） |
+| React 关键组件 | Vitest 7 case | Button / InboxPage Sync 按钮 / SourcesPage Add Source dialog |
+| 端到端 | `bash scripts/smoke.sh` | 启动 sidecar → sync → 验 items |
+
+v0.2b 起加 Playwright E2E（开 Tauri 窗口跑真实交互）。

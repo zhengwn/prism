@@ -49,13 +49,21 @@ prism/
 │   ├── Cargo.toml
 │   └── tauri.conf.json
 ├── python/               # Python sidecar (FastAPI + uvicorn)
-│   ├── pyproject.toml    # uv-managed, depends on fastapi + pydantic
+│   ├── pyproject.toml    # uv-managed, depends on fastapi + pydantic + aiosqlite + httpx + feedparser + litellm + apscheduler
+│   ├── pytest.ini        # pytest 配置
 │   ├── prism_sidecar/
 │   │   ├── __main__.py   # CLI entry: `uv run prism-sidecar`
 │   │   ├── app.py        # FastAPI app, routes, CORS
-│   │   ├── models.py     # Pydantic models (mirror src/types/index.ts)
-│   │   ├── store.py      # In-memory data layer (v0.1) / SQLite later
-│   │   └── data/fixtures.py  # v0.1 seed data
+│   │   ├── models.py     # Pydantic v2 models with bilingual KnowledgeItem (mirror src/types/index.ts)
+│   │   ├── db.py         # aiosqlite + schema migration (v0.2a)
+│   │   ├── store.py      # SQLite-backed CRUD (v0.2a)
+│   │   ├── scheduler.py  # APScheduler integration (v0.2a)
+│   │   ├── config.py     # env-based config (DEEPSEEK_API_KEY, PRISM_DATA_DIR, …)
+│   │   ├── fetchers/     # Fetcher Protocol + RSS + HackerNews (v0.2a)
+│   │   ├── distillers/   # Distiller Protocol + DeepSeek via litellm (v0.2a)
+│   │   ├── pipeline/     # sync orchestration (v0.2a)
+│   │   └── data/fixtures.py  # 5 seed sources (HN + 4 RSS)
+│   ├── tests/            # pytest 38 case (rss/hn/distiller/store/sync/api)
 │   └── README.md
 ├── docs/                 # ROADMAP.md, ARCHITECTURE.md
 ├── public/               # Static assets (favicon, etc.)
@@ -106,16 +114,18 @@ best-practice, so they live here rather than in agent memory.
 
 ## Testing instructions
 
-- **v0.1 has no automated tests yet** — verify manually with:
-  1. `npm run tauri:dev` boots the Tauri window
-  2. Sidebar shows 4 sources from `python/prism_sidecar/data/fixtures.py`
-  3. InboxPage lists 5 knowledge items
-  4. Clicking an item opens the DetailPanel with summary + key points
-  5. Search bar (top) filters items live
-- **v0.2 will add:**
-  - Vitest for React components
-  - pytest for Python sidecar
-  - Playwright for Tauri E2E
+- **v0.2a 测试覆盖**（已实现）：
+  - **Python sidecar**：`cd python && uv run pytest -v` — 38 case（rss 5 / hn 3 / distiller 8 / store 8 / sync 5 / api 9）
+  - **React 组件**：`cd src && npx vitest run` — 7 case（Button / InboxPage Sync 按钮 / SourcesPage Add Source dialog）
+  - **Rust keychain**：`cd src-tauri && cargo test --test keychain_smoke` — 2 真集成测试（macOS Keychain roundtrip）
+  - **端到端**：`npm run smoke` — 启动 sidecar → 同步 → 验 items
+- **手动验证 v0.2a**：
+  1. `npm run tauri:dev` 启动 Tauri 窗口
+  2. Sidebar 显示 5 个种子源（HN + Simon + OpenAI + DeepMind + HF）
+  3. 顶栏点「立即同步」按钮，触发 sync，验证 items 列表刷新
+  4. SourcesPage 点 `+` 弹窗加一个新 RSS 源，验证列表更新
+  5. SettingsPage 配置 DeepSeek API key（存 OS keychain），重启 app 后状态显示「已配置」
+- **v0.2b 起加：** Playwright for Tauri E2E（开 Tauri 窗口跑真实交互）
 
 ## PR & commit conventions
 
@@ -130,8 +140,9 @@ best-practice, so they live here rather than in agent memory.
 - **Python sidecar listens on `127.0.0.1:8765` only** — never bind to `0.0.0.0` in dev
 - **CORS allowlist** in `python/prism_sidecar/app.py` is restricted to Tauri + Vite origins
 - **Tauri capabilities:** webview has minimal permissions by default; add new ones only when needed
-- **API keys (LLM providers, RSS, etc.)** go to OS keychain in v0.2 — never in repo
-- **User data (sources, items) stays on disk locally** — no telemetry in v0.1
+- **API keys (LLM providers, RSS, etc.)** go to **OS keychain** via `tauri-plugin-keyring` (v0.2a 已实现) — never in repo, never in sidecar config files
+- **Key exposure boundary:** 前端只能调 `getApiKeyStatus()` 拿到 `{configured: boolean}`，**永远拿不到 key 值**；key 仅在 Tauri 启动 sidecar 时通过 `cmd.env("DEEPSEEK_API_KEY", key)` 注入子进程环境变量
+- **User data (sources, items) stays on disk locally** (`~/.prism/data.db`) — no telemetry in v0.2a
 
 ## Theme system (v0.1)
 
