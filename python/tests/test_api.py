@@ -27,7 +27,7 @@ class FakeFetcher:
         self._items = items
         self.kind = SourceKind.rss
 
-    async def fetch(self, source: Source) -> list[RawItem]:
+    async def fetch(self, source: Source, lookback_days: int = 7) -> list[RawItem]:
         return list(self._items)
 
 
@@ -152,7 +152,7 @@ async def test_sync_returns_409_on_concurrent(client, monkeypatch):
     class SlowFetcher:
         kind = SourceKind.rss
 
-        async def fetch(self, source):
+        async def fetch(self, source, lookback_days: int = 7):
             import asyncio
             await asyncio.sleep(0.5)
             return [_raw("https://example.com/slow", "Slow")]

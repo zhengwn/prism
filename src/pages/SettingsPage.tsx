@@ -340,6 +340,10 @@ function AiSection() {
           </Button>
         </div>
 
+        <Separator />
+
+        <RedistillBlock />
+
         {feedback && (
           <div
             className={cn(
@@ -372,6 +376,112 @@ function AiSection() {
         }}
       />
     </Card>
+  );
+}
+
+function RedistillBlock() {
+  const { t } = useLanguage();
+  const qc = useQueryClient();
+  const { data: pending, refetch: refetchPending } = useQuery({
+    queryKey: ["distillPending"],
+    queryFn: () => api.getPendingDistillCount(),
+    refetchInterval: 15_000,
+  });
+  const [feedback, setFeedback] = useState<
+    | { kind: "success" | "error"; text: string }
+    | { kind: "keyInvalid"; text: string }
+    | null
+  >(null);
+
+  const redistillMut = useMutation({
+    mutationFn: () => api.redistill(),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["items"] });
+      qc.invalidateQueries({ queryKey: ["distillPending"] });
+      void refetchPending();
+      if (r.keyInvalid) {
+        setFeedback({ kind: "keyInvalid", text: r.error ?? t("settings.redistill.keyInvalidTitle") });
+      } else {
+        setFeedback({
+          kind: r.failed > 0 ? "error" : "success",
+          text: t("settings.redistill.result", {
+            distilled: r.distilled,
+            failed: r.failed,
+            started: r.startedPending,
+          }),
+        });
+      }
+    },
+    onError: (e) => {
+      console.error("[prism] redistill failed:", e);
+      setFeedback({ kind: "error", text: t("inbox.syncError") });
+    },
+  });
+
+  const pendingN = pending?.pending ?? 0;
+  const isRunning = redistillMut.isPending;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-sm font-medium">{t("settings.redistill.title")}</p>
+          <p className="text-xs text-muted-foreground">
+            {t("settings.redistill.description", { count: pendingN })}
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="gap-1.5"
+          onClick={() => redistillMut.mutate()}
+          disabled={isRunning || pendingN === 0}
+          data-testid="redistill-pending"
+        >
+          {isRunning ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <RefreshCw className="h-3.5 w-3.5" />
+          )}
+          {isRunning ? t("settings.redistill.running") : t("settings.redistill.button")}
+        </Button>
+      </div>
+
+      {feedback?.kind === "keyInvalid" && (
+        <div
+          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+          role="alert"
+          data-testid="redistill-key-invalid"
+        >
+          <p className="font-medium">{t("settings.redistill.keyInvalidTitle")}</p>
+          <p className="mt-1 text-muted-foreground">{t("settings.redistill.keyInvalidHint")}</p>
+          {feedback.text && (
+            <span className="mt-1 block font-mono text-[10px] opacity-80">{feedback.text}</span>
+          )}
+        </div>
+      )}
+
+      {feedback && feedback.kind !== "keyInvalid" && (
+        <div
+          className={cn(
+            "inline-flex items-start gap-1.5 rounded-md border px-2 py-1 text-xs",
+            feedback.kind === "success"
+              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"
+              : "border-destructive/40 bg-destructive/10 text-destructive",
+          )}
+          role="status"
+          aria-live="polite"
+          data-testid="redistill-feedback"
+        >
+          {feedback.kind === "success" ? (
+            <Check className="mt-0.5 h-3 w-3 shrink-0" />
+          ) : (
+            <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+          )}
+          <span>{feedback.text}</span>
+        </div>
+      )}
+    </div>
   );
 }
 

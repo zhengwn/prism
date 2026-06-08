@@ -155,7 +155,16 @@
     "clearApiKey": "清除",
     "apiKeyDescription": "保存在操作系统钥匙串里——不会上传到 Prism。",
     "manualSync": "立即手动同步",
-    "manualSyncRunning": "同步中…"
+    "manualSyncRunning": "同步中…",
+    "redistill": {
+      "title": "重蒸馏所有 pending",
+      "description": "当前有 {{count}} 条等待蒸馏。配了新 key、或者之前蒸馏失败时，用这个手动跑一遍。",
+      "button": "立即重蒸馏",
+      "running": "蒸馏中…",
+      "result": "完成：成功 {{distilled}} 条，失败 {{failed}} 条（共 {{started}} 条）。",
+      "keyInvalidTitle": "LLM 服务商拒绝了你的 API key",
+      "keyInvalidHint": "key 可能过期、欠费或被吊销了。请在「AI 提炼」区块更新 key，然后重试。"
+    }
   },
   "detail": {
     "selectTitle": "选一条内容预览",
@@ -274,6 +283,13 @@
     "settings.itemsCount",
     "settings.manualSync",
     "settings.manualSyncRunning",
+    "settings.redistill.button",
+    "settings.redistill.description",
+    "settings.redistill.keyInvalidHint",
+    "settings.redistill.keyInvalidTitle",
+    "settings.redistill.result",
+    "settings.redistill.running",
+    "settings.redistill.title",
     "settings.setApiKey",
     "settings.sidecarDescription",
     "settings.sidecarTitle",

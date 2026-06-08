@@ -6,6 +6,11 @@ configured) calls the LLM to fill in the bilingual fields.
 
 The orchestrator (`run_all_sync` / `run_one_sync` in `app.py`) handles
 job tracking and the per-source serialisation.
+
+First-sync behaviour: a source's *first* successful sync uses a wider
+lookback window (INITIAL_FETCH_LOOKBACK_DAYS, default 30 days) so a fresh
+install isn't sparse. After that, every sync uses FETCH_LOOKBACK_DAYS
+(default 7 days) to keep daily runs light.
 """
 
 from __future__ import annotations
@@ -14,17 +19,28 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from prism_sidecar.config import is_distiller_configured
-from prism_sidecar.distillers.base import DistilledItem, Distiller, DistillerNotConfigured
+from prism_sidecar.config import (
+    FETCH_LOOKBACK_DAYS,
+    INITIAL_FETCH_LOOKBACK_DAYS,
+    is_distiller_configured,
+)
+from prism_sidecar.distillers.base import (
+    DistilledItem,
+    Distiller,
+    DistillerKeyInvalid,
+    DistillerNotConfigured,
+)
 from prism_sidecar.distillers.deepseek import DeepSeekDistiller
 from prism_sidecar.fetchers import registry
 from prism_sidecar.fetchers.base import RawItem
 from prism_sidecar.models import Source
 from prism_sidecar.store import (
+    get_meta,
     insert_item_from_raw,
     item_exists_by_url,
     mark_source_error,
     mark_source_synced,
+    set_meta,
     update_item_distilled,
 )
 
@@ -39,7 +55,9 @@ class SyncStats:
         self.new_items: int = 0
         self.distilled: int = 0
         self.failed_distill: int = 0
+        self.lookback_days: int = FETCH_LOOKBACK_DAYS
         self.error: Optional[str] = None
+        self.key_invalid: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -47,7 +65,9 @@ class SyncStats:
             "new_items": self.new_items,
             "distilled": self.distilled,
             "failed_distill": self.failed_distill,
+            "lookback_days": self.lookback_days,
             "error": self.error,
+            "key_invalid": self.key_invalid,
         }
 
 
@@ -60,6 +80,24 @@ def _get_distiller() -> Distiller | None:
     if not is_distiller_configured():
         return None
     return DeepSeekDistiller()
+
+
+def _first_sync_done_key(source_id: str) -> str:
+    return f"first_sync_done:{source_id}"
+
+
+async def _lookback_for_source(source: Source) -> int:
+    """Return the lookback window (days) to use for this source.
+
+    Wider on the very first sync, normal afterwards.
+    """
+    if await get_meta(_first_sync_done_key(source.id)) is None:
+        return INITIAL_FETCH_LOOKBACK_DAYS
+    return FETCH_LOOKBACK_DAYS
+
+
+async def _mark_first_sync_done(source: Source) -> None:
+    await set_meta(_first_sync_done_key(source.id), datetime.now(timezone.utc).isoformat())
 
 
 async def run_source_sync(source: Source, distiller: Distiller | None = None) -> SyncStats:
@@ -77,9 +115,12 @@ async def run_source_sync(source: Source, distiller: Distiller | None = None) ->
         stats.error = "source disabled"
         return stats
 
+    lookback = await _lookback_for_source(source)
+    stats.lookback_days = lookback
+
     fetcher = registry.get_fetcher(source)
     try:
-        raw_items: list[RawItem] = await fetcher.fetch(source)
+        raw_items: list[RawItem] = await fetcher.fetch(source, lookback_days=lookback)
     except Exception as exc:  # noqa: BLE001
         log.error("[sync] %s (%s) fetch raised: %s", source.name, source.id, exc)
         stats.error = f"fetch: {exc!r}"
@@ -105,6 +146,18 @@ async def run_source_sync(source: Source, distiller: Distiller | None = None) ->
                 except DistillerNotConfigured:
                     # No key — stop trying for the rest of this run.
                     distiller = None
+                except DistillerKeyInvalid as exc:
+                    # Key is dead — bail out of the whole source so we
+                    # don't burn what little credit may remain. Don't
+                    # overwrite last_error here: let the orchestrator
+                    # surface this to the UI.
+                    stats.key_invalid = True
+                    stats.error = f"key_invalid: {exc}"
+                    log.error(
+                        "[sync] %s: API key invalid, aborting distillation: %s",
+                        source.name, exc,
+                    )
+                    break
                 except Exception as exc:  # noqa: BLE001
                     stats.failed_distill += 1
                     log.warning(
@@ -117,10 +170,12 @@ async def run_source_sync(source: Source, distiller: Distiller | None = None) ->
     # Mark success
     now_iso = datetime.now(timezone.utc).isoformat()
     await mark_source_synced(source.id, now_iso, last_error=None)
+    await _mark_first_sync_done(source)
 
     log.info(
-        "[sync] %s: fetched=%d new=%d distilled=%d failed_distill=%d",
-        source.name, stats.fetched, stats.new_items, stats.distilled, stats.failed_distill,
+        "[sync] %s: fetched=%d new=%d distilled=%d failed_distill=%d lookback=%dd",
+        source.name, stats.fetched, stats.new_items, stats.distilled,
+        stats.failed_distill, lookback,
     )
     return stats
 

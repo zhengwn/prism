@@ -28,6 +28,16 @@ class DistillerNotConfigured(RuntimeError):
     """Raised when a Distiller is invoked without the required credentials."""
 
 
+class DistillerKeyInvalid(RuntimeError):
+    """Raised when the configured API key is rejected (401/403/quota/expired).
+
+    Distinct from DistillerNotConfigured: a key is *present* but the
+    provider says it's no good. Callers should stop the whole batch
+    immediately (not retry) so we don't burn through what little credit
+    the key may have left.
+    """
+
+
 @runtime_checkable
 class Distiller(Protocol):
     """A pluggable LLM-backed distiller."""
@@ -36,4 +46,4 @@ class Distiller(Protocol):
         ...
 
 
-__all__ = ["Distiller", "DistilledItem", "DistillerNotConfigured"]
+__all__ = ["Distiller", "DistilledItem", "DistillerNotConfigured", "DistillerKeyInvalid"]

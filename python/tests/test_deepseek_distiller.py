@@ -13,6 +13,7 @@ from prism_sidecar.distillers.base import DistillerNotConfigured
 from prism_sidecar.distillers.deepseek import (
     DeepSeekDistiller,
     _build_prompt,
+    _looks_like_key_invalid,
     _parse_response,
 )
 from prism_sidecar.fetchers.base import RawItem
@@ -108,3 +109,52 @@ async def test_distiller_calls_litellm_and_parses(monkeypatch):
     assert out.title_zh == "OpenAI 发布 GPT-5"
     assert "deepseek" in captured["kwargs"]["model"]
     assert captured["kwargs"]["response_format"] == {"type": "json_object"}
+
+
+# ---- key-invalid detection ---------------------------------------------
+
+class _FakeAuthError(Exception):
+    """Stand-in for litellm's AuthenticationError / PermissionError."""
+
+
+class _FakeRateLimitError(Exception):
+    """Stand-in for a transient 429 (NOT a key problem)."""
+
+
+def test_looks_like_key_invalid_detects_auth_substrings():
+    # What an actual litellm/openai error usually looks like in production.
+    assert _looks_like_key_invalid(_FakeAuthError("status 401 unauthorized"))
+    assert _looks_like_key_invalid(_FakeAuthError("status 403 forbidden"))
+    assert _looks_like_key_invalid(_FakeAuthError("invalid api key"))
+    assert _looks_like_key_invalid(_FakeAuthError("incorrect api key provided"))
+    assert _looks_like_key_invalid(_FakeAuthError("insufficient_quota: you have used all credits"))
+    assert _looks_like_key_invalid(_FakeAuthError("quota exceeded for this billing period"))
+
+
+def test_looks_like_key_invalid_ignores_transient_errors():
+    # 429 (rate limit) and 5xx (server error) are NOT key problems.
+    assert not _looks_like_key_invalid(_FakeRateLimitError("status 429 rate limit hit"))
+    assert not _looks_like_key_invalid(RuntimeError("status 500 internal server error"))
+    assert not _looks_like_key_invalid(RuntimeError("connection timeout"))
+
+
+@pytest.mark.asyncio
+async def test_distill_raises_KeyInvalid_on_401_no_retry(monkeypatch):
+    """A 401 from the provider should raise DistillerKeyInvalid
+    immediately, without burning retry attempts on a dead key."""
+    from prism_sidecar.distillers.base import DistillerKeyInvalid
+
+    call_count = {"n": 0}
+
+    async def fake_acompletion(*args: Any, **kwargs: Any):
+        call_count["n"] += 1
+        raise _FakeAuthError("status 401 unauthorized: invalid api key")
+
+    fake_litellm = type("L", (), {"acompletion": staticmethod(fake_acompletion)})
+    monkeypatch.setitem(__import__("sys").modules, "litellm", fake_litellm)
+
+    d = DeepSeekDistiller(api_key="sk-dead", max_retries=3)  # 3 retries, but should not be used
+    with pytest.raises(DistillerKeyInvalid):
+        await d.distill(SAMPLE_RAW)
+    # No retries on auth errors — the provider already said "no".
+    assert call_count["n"] == 1

@@ -8,6 +8,8 @@ Configuration:
 - Reads `DEEPSEEK_API_KEY` from the env (Tauri is expected to inject it).
 - Rate limit: at most 1 request per second (asyncio.Semaphore + delay).
 - Retry: 2 attempts with exponential backoff on transient errors.
+- 401/403/quota errors raise DistillerKeyInvalid immediately (no retry)
+  so we don't burn what little credit a dying key has left.
 - On final failure, raises so the pipeline can mark the item as
   `distilled_at=NULL` and move on.
 """
@@ -23,6 +25,7 @@ from prism_sidecar.config import DEEPSEEK_API_KEY, DEEPSEEK_MODEL
 from prism_sidecar.distillers.base import (
     DistilledItem,
     Distiller,
+    DistillerKeyInvalid,
     DistillerNotConfigured,
 )
 from prism_sidecar.fetchers.base import RawItem
@@ -170,7 +173,15 @@ class DeepSeekDistiller:
                 return _parse_response(content)
             except DistillerNotConfigured:
                 raise
+            except DistillerKeyInvalid:
+                # No retry — a key that worked once won't suddenly start working.
+                raise
             except Exception as exc:  # noqa: BLE001
+                if _looks_like_key_invalid(exc):
+                    raise DistillerKeyInvalid(
+                        f"API key rejected by provider ({type(exc).__name__}: {exc}). "
+                        "Check the key in Settings (it may be expired, exhausted, or revoked)."
+                    ) from exc
                 last_exc = exc
                 if attempt > self._max_retries:
                     break
@@ -184,4 +195,29 @@ class DeepSeekDistiller:
         raise last_exc
 
 
-__all__ = ["DeepSeekDistiller", "_build_prompt", "_parse_response"]
+def _looks_like_key_invalid(exc: BaseException) -> bool:
+    """Heuristic: detect 401/403/quota/auth errors in litellm / openai / httpx.
+
+    We don't want a flaky network error to be mis-classified as a key
+    problem, so we only flag the request as auth-related when the
+    underlying provider clearly said so. Tests for these substrings are
+    in tests/test_deepseek_distiller.py.
+    """
+    name = type(exc).__name__.lower()
+    msg = str(exc).lower()
+    if "authenticationerror" in name or "permissionerror" in name:
+        return True
+    if "unauthorized" in name or "forbidden" in name:
+        return True
+    if "status 401" in msg or "status 403" in msg:
+        return True
+    if "invalid api key" in msg or "incorrect api key" in msg:
+        return True
+    if "insufficient_quota" in msg or "quota exceeded" in msg or "billing" in msg and "limit" in msg:
+        return True
+    if "credit" in msg and "balance" in msg:
+        return True
+    return False
+
+
+__all__ = ["DeepSeekDistiller", "_build_prompt", "_parse_response", "_looks_like_key_invalid"]

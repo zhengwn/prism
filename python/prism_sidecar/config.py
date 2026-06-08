@@ -64,6 +64,15 @@ FETCH_INTER_SOURCE_SLEEP_SEC: float = float(
 # Window of items to keep from a single fetch (cutoff = now - window).
 FETCH_LOOKBACK_DAYS: int = int(os.environ.get("PRISM_FETCH_LOOKBACK_DAYS", "7"))
 
+# Wider lookback for the very first sync per source, so a fresh install
+# gets a meaningful chunk of history instead of a sparse 7-day slice.
+# Low-frequency sources (e.g. DeepMind Blog) often have nothing in the
+# last 7 days, which makes a new install look broken. After the first
+# successful sync of a source, it falls back to FETCH_LOOKBACK_DAYS.
+INITIAL_FETCH_LOOKBACK_DAYS: int = int(
+    os.environ.get("PRISM_INITIAL_FETCH_LOOKBACK_DAYS", "30")
+)
+
 
 def is_distiller_configured() -> bool:
     """True if the DeepSeek distiller has an API key to work with."""
@@ -84,5 +93,6 @@ __all__ = [
     "FETCH_RETRY_BACKOFF_SEC",
     "FETCH_INTER_SOURCE_SLEEP_SEC",
     "FETCH_LOOKBACK_DAYS",
+    "INITIAL_FETCH_LOOKBACK_DAYS",
     "is_distiller_configured",
 ]

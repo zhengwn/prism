@@ -99,6 +99,31 @@ export const api = {
   getSyncHistory: (limit?: number) =>
     request<SyncJob[]>(`/api/sync/history${limit ? `?limit=${limit}` : ""}`),
 
+  // ----- Distill -----
+  /**
+   * GET /api/distill/pending-count — how many items are waiting to be
+   * distilled. Used by the Settings "重蒸馏所有 pending" button to show
+   * the user how much work is queued.
+   */
+  getPendingDistillCount: () =>
+    request<{ pending: number }>("/api/distill/pending-count"),
+  /**
+   * POST /api/distill/redistill — re-run distillation on every item with
+   * `distilled_at IS NULL`. Use cases:
+   *   - user just configured an API key for the first time
+   *   - user's key expired / ran out and they want a clean re-run
+   * The response's `keyInvalid` field tells the UI to stop retrying.
+   */
+  redistill: () =>
+    request<{
+      startedPending: number;
+      distilled: number;
+      failed: number;
+      keyInvalid: boolean;
+      error?: string;
+      sampleFailures: string[];
+    }>("/api/distill/redistill", { method: "POST" }),
+
   // ----- API key (Tauri-only) -----
   /**
    * Whether an LLM API key is stored in the OS keychain. Returns

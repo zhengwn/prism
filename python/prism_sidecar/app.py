@@ -45,6 +45,7 @@ from prism_sidecar.models import (
     SyncLogEntry,
     SyncResult,
 )
+from prism_sidecar.pipeline.distill import list_pending_distill_ids, redistill_all_pending
 from prism_sidecar.pipeline.sync import run_source_sync
 
 # ---- Logging -------------------------------------------------------------
@@ -446,3 +447,48 @@ async def get_sync_job(job_id: str) -> SyncResult:
     if not job:
         raise HTTPException(404, f"job {job_id} not found")
     return job
+
+
+# ---- Distill -------------------------------------------------------------
+
+class RedistillResponse(BaseModel):
+    started_pending: int
+    distilled: int
+    failed: int
+    key_invalid: bool
+    error: Optional[str] = None
+    sample_failures: list[str] = []
+
+
+@app.get("/api/distill/pending-count", response_model_by_alias=True)
+async def pending_distill_count() -> dict:
+    """How many items are waiting to be distilled. Cheap (count only)."""
+    ids = await list_pending_distill_ids()
+    return {"pending": len(ids)}
+
+
+@app.post("/api/distill/redistill", response_model=RedistillResponse, response_model_by_alias=True)
+async def trigger_redistill(batch_limit: int = Query(1000, ge=1, le=5000)) -> RedistillResponse:
+    """Re-run distillation on every item that still has `distilled_at IS NULL`.
+
+    Use cases:
+      - The user just configured an API key for the first time and wants
+        to back-fill the items that came in earlier without a key.
+      - The user's key expired / ran out and they want a clean re-run
+        after fixing it.
+
+    If the configured key is invalid, the response will have
+    `key_invalid: true` and we'll stop the batch early so we don't
+    burn credit on a dead key.
+    """
+    if not is_distiller_configured():
+        raise HTTPException(503, "distiller is not configured (set the API key in Settings)")
+    result = await redistill_all_pending(batch_limit=batch_limit)
+    return RedistillResponse(
+        started_pending=result.started_pending,
+        distilled=result.distilled,
+        failed=result.failed,
+        key_invalid=result.key_invalid,
+        error=result.error,
+        sample_failures=result.sample_failures,
+    )
