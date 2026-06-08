@@ -110,7 +110,13 @@ pub fn is_known_provider(p: &str) -> bool {
 
 /// Response shape for `get_llm_config` and `set_llm_config`. Never carries a
 /// key value — only the booleans/strings the Settings UI needs to render.
+///
+/// `rename_all = "camelCase"` so the JS side can consume `baseUrl` instead of
+/// `base_url` — Tauri's IPC layer deserialises the request and re-serialises
+/// the response using serde, and the frontend payload convention is camelCase
+/// (matches the `LlmConfig` TS type in `src/types/index.ts`).
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LlmConfigResponse {
     pub provider: String,
     pub configured: bool,
@@ -122,7 +128,12 @@ pub struct LlmConfigResponse {
 
 /// Input shape for `set_llm_config`. All fields except `provider` are
 /// optional — only the ones relevant to the chosen provider need to be sent.
+///
+/// `rename_all = "camelCase"` so the JS side can send `{ apiKey, baseUrl }`
+/// instead of `{ api_key, base_url }`. Without this serde would reject every
+/// save call at runtime (no field matches the JS payload).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LlmConfigInput {
     pub provider: String,
     #[serde(default)]
@@ -136,7 +147,12 @@ pub struct LlmConfigInput {
 /// One entry of the provider schema. Mirrors the JSON returned by
 /// `GET /api/settings/providers` on the sidecar, with a hard-coded fallback
 /// so the frontend can render the picker even before the sidecar is up.
+///
+/// `rename_all = "camelCase"` for consistency with the response structs — the
+/// `get_provider_schema` Tauri command (when called from JS) returns
+/// `requiresKey` / `defaultModel` to match the TS `ProviderSchema` type.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderSchema {
     pub id: String,
     pub label: String,

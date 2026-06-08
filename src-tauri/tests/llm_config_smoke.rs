@@ -209,3 +209,113 @@ fn legacy_v0_2a_username_does_not_collide_with_v0_2a_providers() {
     assert_eq!(secrets::USERNAME_DEEPSEEK_LEGACY, "deepseek-api-key");
     assert_ne!(secrets::USERNAME_DEEPSEEK_LEGACY, secrets::llm_key_username("deepseek"));
 }
+
+// ---------------------------------------------------------------------------
+// Tauri IPC serde contract — camelCase on the JS boundary.
+//
+// v0.2a removed a hard runtime failure: the frontend's `LlmConfigUpdate` TS
+// type uses camelCase (`apiKey`, `baseUrl`), but the Rust struct fields are
+// snake_case. Without `#[serde(rename_all = "camelCase")]` the
+// `set_llm_config` command would silently drop `apiKey` / `baseUrl` at
+// deserialisation time and then either error out or write garbage to the
+// keychain. These tests pin the public IPC shape so a future refactor that
+// drops the attribute fails CI instead of breaking prod.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn llm_config_response_serialises_camel_case() {
+    // Frontend (TS) reads `baseUrl` from the response. If a future refactor
+    // drops `rename_all = "camelCase"`, the JS side would see `base_url` and
+    // break (LlmConfig.baseUrl would be undefined).
+    let resp = secrets::LlmConfigResponse {
+        provider: "ollama".to_string(),
+        configured: true,
+        model: Some("qwen2.5:7b".to_string()),
+        base_url: Some("http://127.0.0.1:11434".to_string()),
+    };
+    let json = serde_json::to_string(&resp).expect("serialize");
+    assert!(
+        json.contains("\"baseUrl\""),
+        "expected camelCase baseUrl, got {json}"
+    );
+    assert!(
+        !json.contains("\"base_url\""),
+        "snake_case base_url leaked into IPC payload: {json}"
+    );
+    // `provider`, `configured`, `model` are already single-word — they
+    // should serialise as-is. Guard against any future global rename.
+    assert!(json.contains("\"provider\":\"ollama\""));
+    assert!(json.contains("\"configured\":true"));
+    assert!(json.contains("\"model\":\"qwen2.5:7b\""));
+}
+
+#[test]
+fn llm_config_input_deserialises_camel_case() {
+    // The JS side sends `{ provider, apiKey, model, baseUrl }`. Verify
+    // serde accepts that exact shape — the deserialised struct should
+    // carry the values under their snake_case field names.
+    let raw = r#"{
+        "provider": "openai",
+        "apiKey": "sk-test-camelcase",
+        "model": "gpt-4o-mini",
+        "baseUrl": "https://api.openai.com/v1"
+    }"#;
+    let input: secrets::LlmConfigInput =
+        serde_json::from_str(raw).expect("camelCase input must deserialise");
+    assert_eq!(input.provider, "openai");
+    assert_eq!(input.api_key.as_deref(), Some("sk-test-camelcase"));
+    assert_eq!(input.model.as_deref(), Some("gpt-4o-mini"));
+    assert_eq!(input.base_url.as_deref(), Some("https://api.openai.com/v1"));
+
+    // Sanity: a snake_case payload DOES technically deserialise (because
+    // `#[serde(default)]` lets unknown fields be silently dropped) — but
+    // the camelCase-mapped fields stay None. This is a real footgun and
+    // the test pins the "data loss" behaviour so any future tweak (e.g.
+    // adding `#[serde(deny_unknown_fields)]`) shows up as an explicit
+    // failure rather than a silent regression. The positive case above is
+    // what actually matters in production: callers must send camelCase.
+    let snake = r#"{
+        "provider": "openai",
+        "api_key": "sk-test",
+        "model": "gpt-4o-mini",
+        "base_url": "https://api.openai.com/v1"
+    }"#;
+    let parsed: secrets::LlmConfigInput =
+        serde_json::from_str(snake).expect("snake_case deserialises but drops data");
+    // `api_key` (camelCase form) stays None because the JSON key
+    // "api_key" doesn't match the renamed field. Document the footgun.
+    assert!(
+        parsed.api_key.is_none(),
+        "snake_case `api_key` must NOT populate api_key field when rename_all = camelCase"
+    );
+    assert!(
+        parsed.base_url.is_none(),
+        "snake_case `base_url` must NOT populate base_url field when rename_all = camelCase"
+    );
+}
+
+#[test]
+fn provider_schema_serialises_camel_case() {
+    // `get_provider_schema` returns a Vec<ProviderSchema> to the JS side.
+    // Pin that `requiresKey` / `defaultModel` are camelCase so the TS
+    // `ProviderSchema` type matches.
+    let schemas = secrets::get_provider_schema();
+    assert!(!schemas.is_empty(), "schema list should not be empty");
+    let json = serde_json::to_string(&schemas.first().unwrap()).expect("serialize");
+    assert!(
+        json.contains("\"requiresKey\""),
+        "expected camelCase requiresKey, got {json}"
+    );
+    assert!(
+        json.contains("\"defaultModel\""),
+        "expected camelCase defaultModel, got {json}"
+    );
+    assert!(
+        !json.contains("\"requires_key\""),
+        "snake_case requires_key leaked into IPC payload: {json}"
+    );
+    assert!(
+        !json.contains("\"default_model\""),
+        "snake_case default_model leaked into IPC payload: {json}"
+    );
+}
