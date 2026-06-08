@@ -1,30 +1,16 @@
-import { Search, RefreshCw, Command, Sun, Moon, Monitor } from "lucide-react";
+import { Search, Command, Sun, Moon, Monitor } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { usePrismStore } from "@/store";
 import { useTheme } from "@/hooks/useTheme";
 import { useLanguage } from "@/hooks/useLanguage";
-import { api } from "@/lib/api";
-import { useQueryClient } from "@tanstack/react-query";
 import type { Theme } from "@/lib/theme";
 
 export function TopBar() {
   const searchQuery = usePrismStore((s) => s.searchQuery);
   const setSearchQuery = usePrismStore((s) => s.setSearchQuery);
   const { theme, setTheme } = useTheme();
-  const qc = useQueryClient();
   const { t } = useLanguage();
-
-  const handleSync = async () => {
-    try {
-      await api.syncAll();
-      // Refetch items after sync
-      qc.invalidateQueries({ queryKey: ["items"] });
-      qc.invalidateQueries({ queryKey: ["sources"] });
-    } catch (e) {
-      console.error("Sync failed:", e);
-    }
-  };
 
   const cycleTheme = () => {
     // light -> dark -> system -> light
@@ -51,10 +37,6 @@ export function TopBar() {
       <div className="flex-1" />
 
       {/* Actions */}
-      <Button variant="ghost" size="sm" onClick={handleSync} className="gap-1.5">
-        <RefreshCw className="h-3.5 w-3.5" />
-        {t("actions.sync")}
-      </Button>
       <ThemeToggle theme={theme} onCycle={cycleTheme} />
     </header>
   );
