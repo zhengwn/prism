@@ -4,18 +4,27 @@
  * Two transport layers:
  *   - HTTP: hits the Python sidecar at `SIDECAR_BASE` (loopback only).
  *   - Tauri invoke: for things the webview can't/shouldn't do via HTTP.
- *     Currently the only consumer is the OS-keychain API key store, which
- *     is implemented as Tauri commands in `src-tauri/`.
+ *     Currently the only consumer is the OS-keychain-backed LLM config
+ *     store, which is implemented as Tauri commands in `src-tauri/`.
  *
  * In dev (pure Vite, no Tauri shell) the invoke calls will fail with
  * `__TAURI_INTERNALS__ is undefined`. The callers (Settings page) treat
- * that as "no key configured" rather than crashing — the UI shows a clean
- * "not configured" state and the user can still configure it once the
- * Tauri build is run.
+ * that as a soft failure rather than crashing — the UI degrades to a
+ * "HTTP-only" mode where the sidecar's in-memory provider state is
+ * updated but the keychain slot is left alone.
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { KnowledgeItem, PrismHealth, Source, SyncJob, SyncResult } from "@/types";
+import type {
+  KnowledgeItem,
+  LlmConfig,
+  LlmConfigUpdate,
+  PrismHealth,
+  ProviderSchema,
+  Source,
+  SyncJob,
+  SyncResult,
+} from "@/types";
 
 const SIDECAR_BASE = import.meta.env.VITE_PRISM_SIDECAR_URL ?? "http://127.0.0.1:8765";
 
@@ -110,7 +119,7 @@ export const api = {
   /**
    * POST /api/distill/redistill — re-run distillation on every item with
    * `distilled_at IS NULL`. Use cases:
-   *   - user just configured an API key for the first time
+   *   - user just configured a provider for the first time
    *   - user's key expired / ran out and they want a clean re-run
    * The response's `keyInvalid` field tells the UI to stop retrying.
    */
@@ -124,23 +133,47 @@ export const api = {
       sampleFailures: string[];
     }>("/api/distill/redistill", { method: "POST" }),
 
-  // ----- API key (Tauri-only) -----
+  // ----- LLM provider settings (v0.2a) -----
   /**
-   * Whether an LLM API key is stored in the OS keychain. Returns
-   * `configured: false` in non-Tauri contexts (pure Vite dev) — there
-   * the call is a no-op so the UI degrades gracefully.
+   * GET /api/settings/providers — list of every supported provider with
+   * the fields the UI should render and the default model. Mirrors the
+   * `get_provider_schema` Tauri command, but the Tauri version is
+   * preferred so the UI can be sure the schema matches the bundled
+   * sidecar (no version skew).
    */
-  getApiKeyStatus: async (): Promise<{ configured: boolean }> => {
-    if (!isTauri()) return { configured: false };
-    return invoke<{ configured: boolean }>("get_api_key_status");
+  listProviders: () => request<ProviderSchema[]>("/api/settings/providers"),
+  /**
+   * GET /api/settings/llm — current active provider and whether an API
+   * key is configured. The key itself is NEVER returned. In the Tauri
+   * build this hits the `get_llm_config` command which reads the
+   * keychain slot; in pure Vite dev it falls back to the sidecar HTTP
+   * endpoint.
+   */
+  getLlmConfig: async (): Promise<LlmConfig> => {
+    if (isTauri()) return invoke<LlmConfig>("get_llm_config");
+    return request<LlmConfig>("/api/settings/llm");
   },
-  setApiKey: async (key: string): Promise<{ ok: true }> => {
-    if (!isTauri()) throw new Error("API key storage is only available inside the Tauri app");
-    return invoke<{ ok: true }>("set_api_key", { key });
-  },
-  clearApiKey: async (): Promise<{ ok: true }> => {
-    if (!isTauri()) return { ok: true };
-    return invoke<{ ok: true }>("clear_api_key");
+  /**
+   * Save the active LLM configuration.
+   *
+   * Two paths:
+   *   - Tauri: invokes `set_llm_config` which writes the key into the
+   *     OS keychain and asks Tauri to restart the sidecar (so the new
+   *     env vars take effect). This is the only path that persists the
+   *     API key.
+   *   - Vite dev: POST to the sidecar HTTP endpoint. The sidecar updates
+   *     its in-memory active provider; the key is NOT persisted
+   *     anywhere (the keychain isn't accessible from the webview
+   *     outside of Tauri). Good enough for UI iteration.
+   */
+  setLlmConfig: (update: LlmConfigUpdate): Promise<LlmConfig> => {
+    if (isTauri()) {
+      return invoke<LlmConfig>("set_llm_config", { config: update });
+    }
+    return request<LlmConfig>("/api/settings/llm", {
+      method: "POST",
+      body: JSON.stringify(update),
+    });
   },
 };
 

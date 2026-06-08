@@ -23,7 +23,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from prism_sidecar import __version__, scheduler, store
+from prism_sidecar import __version__, scheduler, settings, store
 from prism_sidecar.config import (
     DEEPSEEK_API_KEY,
     DAILY_SYNC_ENABLED,
@@ -34,6 +34,7 @@ from prism_sidecar.config import (
 )
 from prism_sidecar.data.fixtures import SEED_SOURCES
 from prism_sidecar.db import close_db, init_db
+from prism_sidecar.distillers.registry import get_distiller as _registry_get_distiller
 from prism_sidecar.models import (
     HealthInfo,
     ItemStatus,
@@ -68,6 +69,17 @@ log = logging.getLogger("prism-sidecar")
 _sync_lock: asyncio.Lock = asyncio.Lock()
 _inflight_jobs: set[str] = set()
 _is_app_ready: bool = False
+
+# Cached reference to the most recently built distiller. The pipeline
+# builds a fresh distiller per job (so config changes between jobs are
+# picked up), but the /api/settings/llm endpoint can hot-swap this
+# reference for callers that want to test the change immediately.
+#
+# TODO(v0.2a): this is best-effort. The reliable way to apply a
+# provider change is to restart the sidecar (Tauri kills + respawns
+# it). Hot-swap is documented as a "may help for quick UI feedback"
+# nicety, not a guarantee.
+_current_distiller: object | None = None
 
 
 def _has_inflight_job() -> bool:
@@ -269,6 +281,13 @@ async def lifespan(app: FastAPI):
     global _is_app_ready
     log.info("[prism-sidecar] v%s starting up", __version__)
     log.info("[prism-sidecar] db: %s", PRISM_DB_PATH)
+
+    # Read the active provider config (or create the default file).
+    active = settings.write_default_if_missing()
+    log.info(
+        "[prism-sidecar] active LLM provider: %s (model=%s, base_url=%s)",
+        active["provider"], active.get("model"), active.get("base_url"),
+    )
     log.info(
         "[prism-sidecar] distiller: %s",
         "configured" if is_distiller_configured() else "NOT configured (DEEPSEEK_API_KEY missing)",
@@ -492,3 +511,87 @@ async def trigger_redistill(batch_limit: int = Query(1000, ge=1, le=5000)) -> Re
         error=result.error,
         sample_failures=result.sample_failures,
     )
+
+
+# ---- Settings (LLM provider) --------------------------------------------
+
+
+@app.get(
+    "/api/settings/providers",
+    response_model=list[settings.ProviderSchema],
+    response_model_by_alias=True,
+)
+async def list_provider_schemas() -> list[settings.ProviderSchema]:
+    """Static metadata describing all 5 providers' Settings-UI shape.
+
+    The frontend uses this to decide which input fields to render
+    after the user picks a provider from the dropdown.
+    """
+    return list(settings.PROVIDER_SCHEMAS)
+
+
+@app.get(
+    "/api/settings/llm",
+    response_model=settings.LlmConfig,
+    response_model_by_alias=True,
+)
+async def get_llm_config() -> settings.LlmConfig:
+    """Current active LLM configuration (no API key returned)."""
+    return settings.get_llm_status()
+
+
+@app.post(
+    "/api/settings/llm",
+    response_model=settings.LlmConfig,
+    response_model_by_alias=True,
+)
+async def set_llm_config(payload: settings.LlmConfigUpdate) -> settings.LlmConfig:
+    """Switch the active LLM provider.
+
+    The body MUST NOT include ``api_key`` — Tauri writes the key to the
+    OS keychain and (re)launches the sidecar with the right env vars.
+    If ``api_key`` is present in the body, we reject it with 400 so
+    keys can never transit through the sidecar.
+
+    Side effects on success:
+      * rewrite ``active_provider.json``
+      * best-effort hot-swap the cached distiller (a real change
+        requires restarting the sidecar)
+    """
+    # Pydantic's exclude=True keeps api_key OUT of the serialized
+    # response, but it still parses it on the way in. Read it back
+    # off the model and reject explicitly — keys never transit HTTP.
+    if payload.api_key not in (None, ""):
+        raise HTTPException(
+            400,
+            "api_key not accepted via HTTP, use Tauri command",
+        )
+
+    provider = payload.provider
+    if provider not in {s.id for s in settings.PROVIDER_SCHEMAS}:
+        raise HTTPException(400, f"unknown provider: {provider!r}")
+
+    try:
+        settings.set_active_provider(
+            provider,
+            model=payload.model,
+            base_url=payload.base_url,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    # Best-effort hot-swap. Pipeline builds a fresh distiller per job
+    # anyway, so this only matters for any code path that reads the
+    # cached one. We log and move on if it fails.
+    global _current_distiller
+    try:
+        _current_distiller = _registry_get_distiller(
+            provider, model=payload.model, base_url=payload.base_url,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "[prism-sidecar] hot-swap distiller failed (will rebuild next job): %s",
+            exc,
+        )
+
+    return settings.get_llm_status()

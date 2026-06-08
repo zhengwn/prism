@@ -25,7 +25,7 @@ from prism_sidecar.distillers.base import (
     DistillerKeyInvalid,
     DistillerNotConfigured,
 )
-from prism_sidecar.distillers.deepseek import DeepSeekDistiller
+from prism_sidecar.distillers.registry import get_distiller
 from prism_sidecar.fetchers.base import RawItem
 from prism_sidecar.store import (
     get_item,
@@ -33,6 +33,10 @@ from prism_sidecar.store import (
     update_item_distilled,
 )
 from prism_sidecar.db import get_db
+from prism_sidecar.settings import (
+    is_provider_configured,
+    load_active_provider,
+)
 
 log = logging.getLogger(__name__)
 
@@ -59,9 +63,24 @@ async def list_pending_distill_ids() -> list[str]:
 
 
 def _get_distiller() -> Distiller | None:
-    if not is_distiller_configured():
+    """Build the active distiller from ``active_provider.json`` + env.
+
+    Returns None if the active provider has no key in env (or for the
+    keyless Ollama case, if we can't even build a base URL).
+    """
+    cfg = load_active_provider()
+    provider = cfg["provider"]
+    if not is_provider_configured(provider):
         return None
-    return DeepSeekDistiller()
+    try:
+        return get_distiller(
+            provider,
+            model=cfg.get("model"),
+            base_url=cfg.get("base_url"),
+        )
+    except (ValueError, Exception) as exc:  # noqa: BLE001
+        log.warning("[redistill] could not build distiller for %r: %s", provider, exc)
+        return None
 
 
 async def redistill_all_pending(

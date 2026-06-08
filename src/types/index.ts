@@ -92,3 +92,64 @@ export interface SyncJob {
   status: SyncJobStatus;
   error?: string;
 }
+
+// ---------- v0.2a — LLM provider settings ----------
+
+/**
+ * The set of providers the sidecar supports. Adding a new provider requires
+ * updating both the Python registry (`python/prism_sidecar/distillers/`) and
+ * the i18n hint strings in `src/i18n/{en,zh}.json`.
+ */
+export type ProviderId = "deepseek" | "openai" | "anthropic" | "ollama" | "custom";
+
+/**
+ * A single configurable field on a provider's settings form. The `name` is
+ * the machine key (the API field the sidecar expects); the rest is i18n / UX.
+ */
+export interface ProviderField {
+  name: "api_key" | "model" | "base_url";
+  label: string;
+  required: boolean;
+  default?: string;
+  placeholder?: string;
+}
+
+/**
+ * Schema describing one LLM provider, returned by GET /api/settings/providers
+ * and the `get_provider_schema` Tauri command. The UI uses this to know which
+ * fields to render and what placeholders / hints to show.
+ */
+export interface ProviderSchema {
+  id: ProviderId;
+  label: string;
+  hint: string;
+  requiresKey: boolean;
+  defaultModel: string;
+  fields: ProviderField[];
+}
+
+/**
+ * The currently active LLM configuration. Returned by GET /api/settings/llm
+ * and `get_llm_config`. The API key is NEVER returned — the UI only knows
+ * `configured: boolean`. Storing / clearing the key goes through the Tauri
+ * keychain.
+ */
+export interface LlmConfig {
+  provider: ProviderId;
+  configured: boolean;
+  model?: string;
+  baseUrl?: string;
+}
+
+/**
+ * Payload for `setLlmConfig` — what the Settings UI sends to save a new
+ * provider. All fields except `provider` are optional because the user may
+ * only be flipping the dropdown (in which case the existing key / model /
+ * base_url stay intact).
+ */
+export interface LlmConfigUpdate {
+  provider: ProviderId;
+  apiKey?: string;
+  model?: string;
+  baseUrl?: string;
+}

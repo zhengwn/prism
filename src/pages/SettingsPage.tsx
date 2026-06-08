@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Trans } from "react-i18next";
 import { api, SIDECAR_BASE } from "@/lib/api";
@@ -17,9 +17,8 @@ import {
   Monitor,
   Languages,
   Sparkles,
-  KeyRound,
   RefreshCw,
-  X,
+  ChevronDown,
   Loader2,
   Check,
   AlertCircle,
@@ -29,6 +28,7 @@ import type { Theme } from "@/lib/theme";
 import { useLanguage } from "@/hooks/useLanguage";
 import { LANGUAGE_LABELS, SUPPORTED_LANGUAGES, type Language } from "@/lib/language";
 import { cn } from "@/lib/utils";
+import type { LlmConfigUpdate, ProviderId, ProviderSchema } from "@/types";
 
 export function SettingsPage() {
   const { t } = useLanguage();
@@ -242,23 +242,126 @@ export function SettingsPage() {
 function AiSection() {
   const { t } = useLanguage();
   const qc = useQueryClient();
-  const { data: status } = useQuery({
-    queryKey: ["apiKeyStatus"],
-    queryFn: () => api.getApiKeyStatus(),
+
+  const { data: llmConfig } = useQuery({
+    queryKey: ["llmConfig"],
+    queryFn: () => api.getLlmConfig(),
   });
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const { data: schemas } = useQuery({
+    queryKey: ["providerSchemas"],
+    queryFn: () => api.listProviders(),
+    staleTime: 5 * 60_000,
+  });
+
+  // Active form state. `null` until the config query resolves; the render
+  // path falls back to a default provider in that window so the UI never
+  // shows a blank dropdown.
+  const [selectedProvider, setSelectedProvider] = useState<ProviderId | null>(null);
+  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  // "Clear key" is a destructive action — track it as a flag so we only
+  // emit apiKey="" on the next save, not on every render.
+  const [clearKey, setClearKey] = useState(false);
   const [feedback, setFeedback] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
-  const clearMut = useMutation({
-    mutationFn: () => api.clearApiKey(),
+  // Hydrate the form when the loaded config first arrives. After that the
+  // form is owned by local state so the user can edit freely.
+  useEffect(() => {
+    if (selectedProvider === null && llmConfig) {
+      setSelectedProvider(llmConfig.provider);
+      setModel(llmConfig.model ?? "");
+      setBaseUrl(llmConfig.baseUrl ?? "");
+    }
+  }, [llmConfig, selectedProvider]);
+
+  // Switching providers resets the form fields. Anything the user typed
+  // but didn't save is discarded — clearer than carrying stale state into
+  // a different provider's settings.
+  const onProviderChange = (next: ProviderId) => {
+    setSelectedProvider(next);
+    setApiKey("");
+    setClearKey(false);
+    if (llmConfig && llmConfig.provider === next) {
+      setModel(llmConfig.model ?? "");
+      setBaseUrl(llmConfig.baseUrl ?? "");
+    } else {
+      const schema = schemas?.find((s) => s.id === next);
+      setModel(schema?.defaultModel ?? "");
+      setBaseUrl("");
+    }
+  };
+
+  // Effective provider for rendering. Until the config loads we show
+  // deepseek (the v0.2a default) so the form has stable, sensible
+  // defaults.
+  const activeProvider: ProviderId = selectedProvider ?? "deepseek";
+  const activeSchema: ProviderSchema | undefined = schemas?.find(
+    (s) => s.id === activeProvider,
+  );
+  const requiresKey = activeSchema?.requiresKey ?? true;
+
+  // Field visibility per provider. Mirrors docs/v0.2a/providers-design.md.
+  const showApiKey = requiresKey;
+  const showOllamaHost = activeProvider === "ollama";
+  const showBaseUrl = activeProvider === "custom";
+  // For the 3 key providers the model lives behind an "Advanced" disclosure;
+  // ollama and custom show the model directly because the user is more likely
+  // to want to change it (custom's model is required, ollama's is the whole
+  // point of the setup).
+  const showAdvancedModel = activeProvider !== "ollama" && activeProvider !== "custom";
+  const showInlineModel = activeProvider === "ollama" || activeProvider === "custom";
+
+  const apiKeyPlaceholderKey = (() => {
+    switch (activeProvider) {
+      case "deepseek":
+        return "settings.provider.apiKeyPlaceholderDeepseek";
+      case "openai":
+        return "settings.provider.apiKeyPlaceholderOpenai";
+      case "anthropic":
+        return "settings.provider.apiKeyPlaceholderAnthropic";
+      case "custom":
+        return "settings.provider.apiKeyPlaceholderCustom";
+      default:
+        return "settings.provider.apiKeyPlaceholderDeepseek";
+    }
+  })();
+
+  const saveMut = useMutation({
+    mutationFn: () => {
+      if (!selectedProvider) throw new Error("No provider selected");
+      const update: LlmConfigUpdate = { provider: selectedProvider };
+
+      if (showApiKey) {
+        if (clearKey) {
+          // Explicit clear — empty string signals "wipe this slot" to
+          // both the Tauri command and the HTTP endpoint.
+          update.apiKey = "";
+        } else if (apiKey.trim()) {
+          update.apiKey = apiKey.trim();
+        }
+      }
+      if (showOllamaHost && baseUrl.trim()) {
+        update.baseUrl = baseUrl.trim();
+      }
+      if (showBaseUrl && baseUrl.trim()) {
+        update.baseUrl = baseUrl.trim();
+      }
+      if (model.trim()) {
+        update.model = model.trim();
+      }
+      return api.setLlmConfig(update);
+    },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["apiKeyStatus"] });
-      setFeedback({ kind: "success", text: t("settings.apiKeyStatus.notConfigured") });
-      window.setTimeout(() => setFeedback(null), 2_500);
+      qc.invalidateQueries({ queryKey: ["llmConfig"] });
+      setFeedback({ kind: "success", text: t("settings.provider.saveSuccess") });
+      setApiKey("");
+      setClearKey(false);
+      window.setTimeout(() => setFeedback(null), 3_000);
     },
     onError: (e) => {
-      console.error("[prism] clearApiKey failed:", e);
-      setFeedback({ kind: "error", text: t("inbox.syncError") });
+      console.error("[prism] setLlmConfig failed:", e);
+      setFeedback({ kind: "error", text: t("settings.provider.saveError") });
     },
   });
 
@@ -279,7 +382,8 @@ function AiSection() {
     },
   });
 
-  const configured = status?.configured ?? false;
+  const configured = llmConfig?.configured ?? false;
+  const currentLabel = activeSchema?.label ?? activeProvider;
 
   return (
     <Card>
@@ -289,38 +393,248 @@ function AiSection() {
             <Sparkles className="h-4 w-4" />
             <CardTitle className="text-base">{t("settings.aiSection")}</CardTitle>
           </div>
-          <Badge variant={configured ? "default" : "secondary"} data-testid="api-key-status" data-configured={configured}>
-            {configured ? `✅ ${t("settings.apiKeyStatus.configured")}` : `❌ ${t("settings.apiKeyStatus.notConfigured")}`}
+          <Badge
+            variant={configured ? "default" : "secondary"}
+            data-testid="llm-config-status"
+            data-configured={configured}
+          >
+            {configured
+              ? `✅ ${t("settings.apiKeyStatus.configured")}`
+              : `❌ ${t("settings.apiKeyStatus.notConfigured")}`}
           </Badge>
         </div>
-        <CardDescription>{t("settings.aiDescription")}</CardDescription>
+        <CardDescription>
+          {t("settings.provider.current", { label: currentLabel })}
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            className="gap-1.5"
-            onClick={() => setDialogOpen(true)}
-            data-testid="set-api-key"
+        {/* Provider dropdown */}
+        <div className="space-y-1.5">
+          <label
+            htmlFor="provider-select"
+            className="text-sm font-medium"
           >
-            <KeyRound className="h-3.5 w-3.5" />
-            {t("settings.setApiKey")}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="gap-1.5 text-muted-foreground"
-            onClick={() => clearMut.mutate()}
-            disabled={!configured || clearMut.isPending}
+            {t("settings.provider.label")}
+          </label>
+          <select
+            id="provider-select"
+            data-testid="provider-select"
+            value={activeProvider}
+            onChange={(e) => onProviderChange(e.target.value as ProviderId)}
+            disabled={saveMut.isPending}
+            className={cn(
+              "flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors",
+              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              "disabled:cursor-not-allowed disabled:opacity-50",
+            )}
           >
-            {t("settings.clearApiKey")}
+            {(schemas ?? []).map((schema) => (
+              <option key={schema.id} value={schema.id}>
+                {schema.label}
+              </option>
+            ))}
+          </select>
+          {activeSchema && (
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid="provider-hint"
+              data-provider={activeProvider}
+            >
+              {t(`settings.provider.hints.${activeProvider}` as const)}
+            </p>
+          )}
+        </div>
+
+        {/* API key (for the 3 key providers + custom) */}
+        {showApiKey && (
+          <div className="space-y-1.5">
+            <label
+              htmlFor="provider-api-key"
+              className="text-sm font-medium"
+            >
+              {t("settings.provider.apiKey")}
+            </label>
+            <div className="flex items-center gap-2">
+              <Input
+                id="provider-api-key"
+                data-testid="provider-api-key"
+                type="password"
+                value={apiKey}
+                onChange={(e) => {
+                  setApiKey(e.target.value);
+                  if (clearKey) setClearKey(false);
+                }}
+                placeholder={t(apiKeyPlaceholderKey as any)}
+                disabled={saveMut.isPending}
+                autoComplete="off"
+                spellCheck={false}
+                className="flex-1"
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setApiKey("");
+                  setClearKey(true);
+                }}
+                disabled={saveMut.isPending}
+                data-testid="provider-clear-key"
+              >
+                {t("settings.provider.clearKey")}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t("settings.apiKeyDescription")}
+            </p>
+          </div>
+        )}
+
+        {/* No key needed hint for Ollama */}
+        {!showApiKey && (
+          <p className="text-xs text-muted-foreground" data-testid="provider-no-key-hint">
+            {t("settings.provider.noKeyNeeded")}
+          </p>
+        )}
+
+        {/* Ollama host — only when the user picked ollama */}
+        {showOllamaHost && (
+          <div className="space-y-1.5">
+            <label
+              htmlFor="provider-ollama-host"
+              className="text-sm font-medium"
+            >
+              {t("settings.provider.ollamaHost")}
+            </label>
+            <Input
+              id="provider-ollama-host"
+              data-testid="provider-ollama-host"
+              type="text"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="http://127.0.0.1:11434"
+              disabled={saveMut.isPending}
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <p className="text-xs text-muted-foreground">
+              {t("settings.provider.ollamaHostHint")}
+            </p>
+          </div>
+        )}
+
+        {/* Base URL — only when the user picked custom */}
+        {showBaseUrl && (
+          <div className="space-y-1.5">
+            <label
+              htmlFor="provider-base-url"
+              className="text-sm font-medium"
+            >
+              {t("settings.provider.baseUrl")}
+            </label>
+            <Input
+              id="provider-base-url"
+              data-testid="provider-base-url"
+              type="text"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder={t("settings.provider.baseUrlPlaceholder")}
+              disabled={saveMut.isPending}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+        )}
+
+        {/* Model — inline for ollama and custom, advanced disclosure otherwise */}
+        {showInlineModel && (
+          <div className="space-y-1.5">
+            <label htmlFor="provider-model" className="text-sm font-medium">
+              {t("settings.provider.model")}
+            </label>
+            <Input
+              id="provider-model"
+              data-testid="provider-model"
+              type="text"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder={activeSchema?.defaultModel ?? ""}
+              disabled={saveMut.isPending}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+        )}
+
+        {showAdvancedModel && (
+          <details
+            className="rounded-md border border-input bg-background/50 p-3"
+            data-testid="provider-advanced"
+          >
+            <summary className="flex cursor-pointer items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground">
+              <ChevronDown className="h-3.5 w-3.5" />
+              {t("settings.provider.advanced")}
+            </summary>
+            <div className="mt-3 space-y-1.5">
+              <label htmlFor="provider-model" className="text-sm font-medium">
+                {t("settings.provider.model")}
+              </label>
+              <Input
+                id="provider-model"
+                data-testid="provider-model"
+                type="text"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder={activeSchema?.defaultModel ?? ""}
+                disabled={saveMut.isPending}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </div>
+          </details>
+        )}
+
+        {/* Save button */}
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            onClick={() => saveMut.mutate()}
+            disabled={saveMut.isPending}
+            data-testid="provider-save"
+          >
+            {saveMut.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {saveMut.isPending
+              ? t("settings.provider.saving")
+              : t("settings.provider.save")}
           </Button>
         </div>
-        <p className="text-xs text-muted-foreground">{t("settings.apiKeyDescription")}</p>
+
+        {feedback && (
+          <div
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
+              feedback.kind === "success"
+                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"
+                : "border-destructive/40 bg-destructive/10 text-destructive",
+            )}
+            role="status"
+            aria-live="polite"
+            data-testid="ai-feedback"
+          >
+            {feedback.kind === "success" ? (
+              <Check className="h-3 w-3" />
+            ) : (
+              <AlertCircle className="h-3 w-3" />
+            )}
+            {feedback.text}
+          </div>
+        )}
 
         <Separator />
 
+        {/* Manual sync — kept from v0.2a for users who don't want to wait
+            for the scheduler. Lives in the AI section because in practice
+            "re-run the pipeline" is what you do after fixing the provider. */}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs text-muted-foreground">{t("settings.aiDescription")}</p>
           <Button
@@ -343,38 +657,7 @@ function AiSection() {
         <Separator />
 
         <RedistillBlock />
-
-        {feedback && (
-          <div
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
-              feedback.kind === "success"
-                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"
-                : "border-destructive/40 bg-destructive/10 text-destructive",
-            )}
-            role="status"
-            aria-live="polite"
-            data-testid="ai-feedback"
-          >
-            {feedback.kind === "success" ? (
-              <Check className="h-3 w-3" />
-            ) : (
-              <AlertCircle className="h-3 w-3" />
-            )}
-            {feedback.text}
-          </div>
-        )}
       </CardContent>
-
-      <ApiKeyDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        onSaved={() => {
-          qc.invalidateQueries({ queryKey: ["apiKeyStatus"] });
-          setFeedback({ kind: "success", text: t("settings.apiKeyStatus.configured") });
-          window.setTimeout(() => setFeedback(null), 2_500);
-        }}
-      />
     </Card>
   );
 }
@@ -481,113 +764,6 @@ function RedistillBlock() {
           <span>{feedback.text}</span>
         </div>
       )}
-    </div>
-  );
-}
-
-function ApiKeyDialog({
-  open,
-  onOpenChange,
-  onSaved,
-}: {
-  open: boolean;
-  onOpenChange: (v: boolean) => void;
-  onSaved: () => void;
-}) {
-  const { t } = useLanguage();
-  const [key, setKey] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  const saveMut = useMutation({
-    mutationFn: (k: string) => api.setApiKey(k),
-    onSuccess: () => {
-      setKey("");
-      setError(null);
-      onOpenChange(false);
-      onSaved();
-    },
-    onError: (e) => {
-      console.error("[prism] setApiKey failed:", e);
-      setError(t("inbox.syncError"));
-    },
-  });
-
-  const onSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!key.trim()) {
-      setError(t("inbox.syncError"));
-      return;
-    }
-    setError(null);
-    saveMut.mutate(key.trim());
-  };
-
-  const onClose = () => {
-    if (saveMut.isPending) return;
-    setKey("");
-    setError(null);
-    onOpenChange(false);
-  };
-
-  if (!open) return null;
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
-      data-testid="api-key-dialog"
-    >
-      <div
-        className="w-full max-w-md rounded-lg border bg-card text-card-foreground shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="api-key-title"
-      >
-        <form onSubmit={onSubmit}>
-          <div className="flex items-center justify-between border-b p-4">
-            <h3 id="api-key-title" className="text-sm font-semibold">
-              {t("settings.apiKeyDialog.title")}
-            </h3>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              onClick={onClose}
-              aria-label="Close"
-            >
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-          <div className="space-y-3 p-4">
-            <p className="text-xs text-muted-foreground">{t("settings.apiKeyDialog.description")}</p>
-            <Input
-              autoFocus
-              type="password"
-              value={key}
-              onChange={(e) => setKey(e.target.value)}
-              placeholder={t("settings.apiKeyDialog.placeholder")}
-              disabled={saveMut.isPending}
-              data-testid="api-key-input"
-            />
-            {error && (
-              <p className="text-xs text-destructive" role="alert">
-                {error}
-              </p>
-            )}
-          </div>
-          <div className="flex items-center justify-end gap-2 border-t p-4">
-            <Button type="button" variant="ghost" onClick={onClose} disabled={saveMut.isPending}>
-              {t("settings.apiKeyDialog.cancel")}
-            </Button>
-            <Button type="submit" disabled={saveMut.isPending} data-testid="api-key-submit">
-              {saveMut.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              {t("settings.apiKeyDialog.submit")}
-            </Button>
-          </div>
-        </form>
-      </div>
     </div>
   );
 }

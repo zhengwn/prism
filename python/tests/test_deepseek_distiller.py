@@ -1,21 +1,27 @@
-"""Test the DeepSeek distiller with mocked litellm."""
+"""Test the DeepSeek distiller with mocked litellm.
+
+The shared ``LitellmDistiller`` base class is the meat of the test
+target now — every concrete provider subclasses it. The provider-
+specific bits we still test here are the model string and the
+DEEPSEEK_API_KEY env var lookup.
+"""
 
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from prism_sidecar.distillers.base import DistillerNotConfigured
-from prism_sidecar.distillers.deepseek import (
-    DeepSeekDistiller,
+from prism_sidecar.distillers.base import (
+    DistillerNotConfigured,
     _build_prompt,
     _looks_like_key_invalid,
     _parse_response,
+    looks_like_key_invalid,
 )
+from prism_sidecar.distillers.deepseek import DeepSeekDistiller
 from prism_sidecar.fetchers.base import RawItem
 from prism_sidecar.models import ContentType
 
@@ -36,6 +42,9 @@ SAMPLE_GOOD = {
     "key_points_zh": ["统一多模态架构", "原生工具调用", "性能比 GPT-4o 提升 50%"],
     "tags_zh": ["openai", "gpt-5", "多模态", "大模型"],
 }
+
+
+# ---- prompt + parsing helpers (live in base now) ------------------------
 
 
 def test_build_prompt_includes_title_and_content():
@@ -80,12 +89,33 @@ def test_parse_response_rejects_garbage():
         _parse_response("not json at all")
 
 
+# ---- DeepSeek-specific: class wiring + env var name ----------------------
+
+
+def test_deepseek_default_model_string():
+    """The litellm model string must use the deepseek/ prefix."""
+    d = DeepSeekDistiller(api_key="sk-test", max_retries=0)
+    assert d._model == "deepseek/deepseek-chat"
+
+
+def test_deepseek_reads_key_from_env(monkeypatch):
+    """If no api_key is passed, the base class reads DEEPSEEK_API_KEY."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-from-env")
+    d = DeepSeekDistiller()
+    assert d._api_key == "sk-from-env"
+
+
+# ---- No-key handling -----------------------------------------------------
+
+
 def test_distiller_raises_when_no_key():
     d = DeepSeekDistiller(api_key=None, max_retries=0)
     with pytest.raises(DistillerNotConfigured):
-        # Use asyncio to actually run; pytest-asyncio picks it up.
         import asyncio
         asyncio.run(d.distill(SAMPLE_RAW))
+
+
+# ---- litellm call shape -------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -107,11 +137,13 @@ async def test_distiller_calls_litellm_and_parses(monkeypatch):
     out = await d.distill(SAMPLE_RAW)
 
     assert out.title_zh == "OpenAI 发布 GPT-5"
-    assert "deepseek" in captured["kwargs"]["model"]
+    assert captured["kwargs"]["model"] == "deepseek/deepseek-chat"
+    assert captured["kwargs"]["api_key"] == "sk-test"
     assert captured["kwargs"]["response_format"] == {"type": "json_object"}
 
 
-# ---- key-invalid detection ---------------------------------------------
+# ---- key-invalid detection (moved to base) ------------------------------
+
 
 class _FakeAuthError(Exception):
     """Stand-in for litellm's AuthenticationError / PermissionError."""
@@ -136,6 +168,14 @@ def test_looks_like_key_invalid_ignores_transient_errors():
     assert not _looks_like_key_invalid(_FakeRateLimitError("status 429 rate limit hit"))
     assert not _looks_like_key_invalid(RuntimeError("status 500 internal server error"))
     assert not _looks_like_key_invalid(RuntimeError("connection timeout"))
+
+
+def test_looks_like_key_invalid_public_alias():
+    """The public name and the private alias should be the same function."""
+    assert looks_like_key_invalid is _looks_like_key_invalid
+
+
+# ---- 401 fast-fail via the base class -----------------------------------
 
 
 @pytest.mark.asyncio

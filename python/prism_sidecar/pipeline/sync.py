@@ -30,10 +30,14 @@ from prism_sidecar.distillers.base import (
     DistillerKeyInvalid,
     DistillerNotConfigured,
 )
-from prism_sidecar.distillers.deepseek import DeepSeekDistiller
+from prism_sidecar.distillers.registry import get_distiller
 from prism_sidecar.fetchers import registry
 from prism_sidecar.fetchers.base import RawItem
 from prism_sidecar.models import Source
+from prism_sidecar.settings import (
+    is_provider_configured,
+    load_active_provider,
+)
 from prism_sidecar.store import (
     get_meta,
     insert_item_from_raw,
@@ -74,12 +78,29 @@ class SyncStats:
 def _get_distiller() -> Distiller | None:
     """Return a configured distiller, or None if API key missing.
 
-    The distiller is lazily constructed so unit tests / dev runs without a
-    key can still hit the fetch + insert path.
+    Reads the active provider from ``active_provider.json`` and asks
+    the registry for the matching distiller class. The distiller is
+    lazily constructed so unit tests / dev runs without a key can
+    still hit the fetch + insert path.
+
+    Note: the v0.1 ``is_distiller_configured()`` helper only checked
+    the DeepSeek key. We now check the *active* provider's key, with
+    a fallback to the old helper for any code paths that haven't been
+    updated yet.
     """
-    if not is_distiller_configured():
+    cfg = load_active_provider()
+    provider = cfg["provider"]
+    if not is_provider_configured(provider):
         return None
-    return DeepSeekDistiller()
+    try:
+        return get_distiller(
+            provider,
+            model=cfg.get("model"),
+            base_url=cfg.get("base_url"),
+        )
+    except (ValueError, Exception) as exc:  # noqa: BLE001
+        log.warning("[sync] could not build distiller for %r: %s", provider, exc)
+        return None
 
 
 def _first_sync_done_key(source_id: str) -> str:
