@@ -46,61 +46,28 @@ vi.mock("@/lib/api", () => ({
   },
 }));
 
+// v0.2a+: only 2 providers, both key-required. Schema fields are the
+// minimum needed for the form (apiKey); everything else (model, baseUrl)
+// lives behind the "Advanced" disclosure and is typed in directly.
 const FAKE_SCHEMAS: ProviderSchema[] = [
   {
     id: "deepseek",
     label: "DeepSeek",
     hint: "Best for Chinese, cheap",
     requiresKey: true,
-    defaultModel: "deepseek-chat",
+    defaultModel: "deepseek-v4-pro",
     fields: [
       { name: "api_key", label: "API key", required: true, placeholder: "sk-…" },
-      { name: "model", label: "Model", required: false, default: "deepseek-chat" },
     ],
   },
   {
-    id: "openai",
-    label: "OpenAI",
-    hint: "GPT-4o / GPT-4o-mini",
+    id: "minimax",
+    label: "MiniMax",
+    hint: "M3 — 1M context, OpenAI-compatible",
     requiresKey: true,
-    defaultModel: "gpt-4o-mini",
+    defaultModel: "MiniMax-M3",
     fields: [
-      { name: "api_key", label: "API key", required: true, placeholder: "sk-…" },
-      { name: "model", label: "Model", required: false, default: "gpt-4o-mini" },
-    ],
-  },
-  {
-    id: "anthropic",
-    label: "Anthropic",
-    hint: "Claude 3.5 Sonnet",
-    requiresKey: true,
-    defaultModel: "claude-3-5-sonnet-20241022",
-    fields: [
-      { name: "api_key", label: "API key", required: true, placeholder: "sk-ant-…" },
-      { name: "model", label: "Model", required: false, default: "claude-3-5-sonnet-20241022" },
-    ],
-  },
-  {
-    id: "ollama",
-    label: "Ollama (local)",
-    hint: "Requires a local `ollama serve`",
-    requiresKey: false,
-    defaultModel: "qwen2.5:7b",
-    fields: [
-      { name: "base_url", label: "Ollama host", required: false, default: "http://127.0.0.1:11434" },
-      { name: "model", label: "Model", required: false, default: "qwen2.5:7b" },
-    ],
-  },
-  {
-    id: "custom",
-    label: "Custom (OpenAI-compatible)",
-    hint: "MiniMax / 智谱 / Moonshot / any OpenAI-compatible endpoint",
-    requiresKey: true,
-    defaultModel: "",
-    fields: [
-      { name: "api_key", label: "API key", required: true, placeholder: "sk-…" },
-      { name: "base_url", label: "Base URL", required: true, placeholder: "https://api.example.com/v1" },
-      { name: "model", label: "Model", required: true },
+      { name: "api_key", label: "API key", required: true, placeholder: "ey…" },
     ],
   },
 ];
@@ -108,7 +75,7 @@ const FAKE_SCHEMAS: ProviderSchema[] = [
 const FAKE_LLM_CONFIG: LlmConfig = {
   provider: "deepseek",
   configured: true,
-  model: "deepseek-chat",
+  model: "deepseek-v4-pro",
 };
 
 function renderWithQuery(ui: React.ReactNode) {
@@ -126,9 +93,9 @@ function renderWithQuery(ui: React.ReactNode) {
  * a half-rendered (no options, no apiKey) form.
  */
 async function waitForSchemasLoaded() {
-  // The 5th option (custom) only exists once the schemas query resolves,
+  // The 2nd option (minimax) only exists once the schemas query resolves,
   // so waiting for it is a clean sync barrier.
-  await screen.findByRole("option", { name: /Custom/ });
+  await screen.findByRole("option", { name: /MiniMax/ });
 }
 
 describe("SettingsPage — Provider switcher (AiSection)", () => {
@@ -138,7 +105,7 @@ describe("SettingsPage — Provider switcher (AiSection)", () => {
     vi.mocked(api.api.getLlmConfig).mockResolvedValue(FAKE_LLM_CONFIG);
     vi.mocked(api.api.setLlmConfig).mockImplementation(async (update) => ({
       provider: update.provider,
-      configured: update.provider === "ollama" ? true : Boolean(update.apiKey),
+      configured: Boolean(update.apiKey),
       model: update.model,
       baseUrl: update.baseUrl,
     }));
@@ -152,7 +119,7 @@ describe("SettingsPage — Provider switcher (AiSection)", () => {
     vi.mocked(api.api.getPendingDistillCount).mockResolvedValue({ pending: 0 });
   });
 
-  it("initial render with deepseek shows one API key input and hides host/base-url", async () => {
+  it("initial render with deepseek shows the API key input and the advanced model disclosure", async () => {
     renderWithQuery(<SettingsPage />);
     await waitForSchemasLoaded();
 
@@ -162,73 +129,41 @@ describe("SettingsPage — Provider switcher (AiSection)", () => {
     // API key is present
     expect(screen.getByTestId("provider-api-key")).toBeInTheDocument();
 
-    // Ollama host is NOT present for deepseek
+    // v0.2a+: no separate ollama / base-url / no-key-hint blocks
     expect(screen.queryByTestId("provider-ollama-host")).not.toBeInTheDocument();
-
-    // Base URL is NOT present for deepseek
     expect(screen.queryByTestId("provider-base-url")).not.toBeInTheDocument();
-
-    // No "no key needed" hint
     expect(screen.queryByTestId("provider-no-key-hint")).not.toBeInTheDocument();
+
+    // Model field lives behind the advanced disclosure
+    expect(screen.getByTestId("provider-advanced")).toBeInTheDocument();
   });
 
-  it("switching to ollama hides the API key field and shows host + model", async () => {
+  it("switching to minimax keeps the API key field and the advanced disclosure visible", async () => {
     renderWithQuery(<SettingsPage />);
     await waitForSchemasLoaded();
 
     const select = screen.getByTestId("provider-select");
-    fireEvent.change(select, { target: { value: "ollama" } });
+    fireEvent.change(select, { target: { value: "minimax" } });
 
-    // API key hidden
-    await waitFor(() => {
-      expect(screen.queryByTestId("provider-api-key")).not.toBeInTheDocument();
-    });
-
-    // Ollama host + model appear
-    expect(screen.getByTestId("provider-ollama-host")).toBeInTheDocument();
-    expect(screen.getByTestId("provider-model")).toBeInTheDocument();
-
-    // Base URL field (custom) is NOT present
-    expect(screen.queryByTestId("provider-base-url")).not.toBeInTheDocument();
-
-    // The "no key needed" hint is shown
-    expect(screen.getByTestId("provider-no-key-hint")).toBeInTheDocument();
-  });
-
-  it("switching to custom shows all three fields: base_url, model, api_key", async () => {
-    renderWithQuery(<SettingsPage />);
-    await waitForSchemasLoaded();
-
-    const select = screen.getByTestId("provider-select");
-    fireEvent.change(select, { target: { value: "custom" } });
-
-    expect(screen.getByTestId("provider-base-url")).toBeInTheDocument();
-    expect(screen.getByTestId("provider-model")).toBeInTheDocument();
+    // Both providers need a key, so the api-key field stays.
     expect(screen.getByTestId("provider-api-key")).toBeInTheDocument();
-
-    // Ollama host is NOT present for custom
+    // Advanced disclosure stays too.
+    expect(screen.getByTestId("provider-advanced")).toBeInTheDocument();
+    // No ollama host / no base-url ever appear.
     expect(screen.queryByTestId("provider-ollama-host")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("provider-base-url")).not.toBeInTheDocument();
   });
 
-  it("switching back to deepseek restores the API key input and hides host fields", async () => {
+  it("switching back to deepseek after minimax keeps the API key input", async () => {
     renderWithQuery(<SettingsPage />);
     await waitForSchemasLoaded();
 
     const select = screen.getByTestId("provider-select");
-
-    // Go to ollama first
-    fireEvent.change(select, { target: { value: "ollama" } });
-    await waitFor(() => {
-      expect(screen.getByTestId("provider-ollama-host")).toBeInTheDocument();
-    });
-
-    // Back to deepseek
+    fireEvent.change(select, { target: { value: "minimax" } });
     fireEvent.change(select, { target: { value: "deepseek" } });
-    await waitFor(() => {
-      expect(screen.getByTestId("provider-api-key")).toBeInTheDocument();
-    });
-    expect(screen.queryByTestId("provider-ollama-host")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("provider-base-url")).not.toBeInTheDocument();
+
+    expect(screen.getByTestId("provider-api-key")).toBeInTheDocument();
+    expect(screen.getByTestId("provider-advanced")).toBeInTheDocument();
   });
 
   it("clicking save calls api.setLlmConfig with provider and the typed apiKey", async () => {

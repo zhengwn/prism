@@ -137,20 +137,23 @@ def _new_id(prefix: str) -> str:
 async def health_snapshot() -> dict:
     from prism_sidecar import __version__
     import prism_sidecar.config as _cfg
+    from prism_sidecar import settings as _settings
     PRISM_DB_PATH = _cfg.PRISM_DB_PATH
-    is_distiller_configured = _cfg.is_distiller_configured
 
     db = get_db()
     cur = await db.execute("SELECT COUNT(*) FROM sources")
     sources_count = (await cur.fetchone())[0]
     cur = await db.execute("SELECT COUNT(*) FROM items")
     items_count = (await cur.fetchone())[0]
+    # v0.2a+: check the *active* provider (DeepSeek or MiniMax) rather
+    # than the v0.1 DeepSeek-only helper.
+    active = _settings.load_active_provider()
     return {
         "ok": True,
         "version": __version__,
         "sources_count": int(sources_count),
         "items_count": int(items_count),
-        "distiller_configured": is_distiller_configured(),
+        "distiller_configured": _settings.is_provider_configured(active["provider"]),
         "db_path": str(PRISM_DB_PATH),
         "uptime_sec": int((datetime.now(timezone.utc) - _started_at).total_seconds()),
     }

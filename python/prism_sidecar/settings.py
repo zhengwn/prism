@@ -9,9 +9,9 @@ Tauri populates from the OS keychain before spawning the sidecar.
 Schema::
 
     {
-      "provider": "deepseek" | "openai" | "anthropic" | "ollama" | "custom",
+      "provider": "deepseek" | "minimax",
       "model":    "<override; optional, falls back to default_model>",
-      "base_url": "<required for ollama/custom; otherwise unused>"
+      "base_url": "<required for minimax; otherwise unused>"
     }
 
 Public API:
@@ -118,7 +118,7 @@ PROVIDER_SCHEMAS: list[ProviderSchema] = [
         label="DeepSeek",
         hint="中文最强，便宜",
         requires_key=True,
-        default_model="deepseek/deepseek-chat",
+        default_model="deepseek/deepseek-v4-pro",
         fields=[
             ProviderField(
                 name="api_key", label="apiKey", required=True,
@@ -127,69 +127,16 @@ PROVIDER_SCHEMAS: list[ProviderSchema] = [
         ],
     ),
     ProviderSchema(
-        id="openai",
-        label="OpenAI",
-        hint="GPT-4o / GPT-4o-mini",
+        id="minimax",
+        label="MiniMax",
+        hint="M3，百万上下文，OpenAI 兼容",
         requires_key=True,
-        default_model="openai/gpt-4o-mini",
+        default_model="openai/MiniMax-M3",
         fields=[
             ProviderField(
                 name="api_key", label="apiKey", required=True,
-                placeholder="sk-...",
+                placeholder="ey...",
             )
-        ],
-    ),
-    ProviderSchema(
-        id="anthropic",
-        label="Anthropic",
-        hint="Claude 3.5 Sonnet",
-        requires_key=True,
-        default_model="anthropic/claude-3-5-sonnet-20241022",
-        fields=[
-            ProviderField(
-                name="api_key", label="apiKey", required=True,
-                placeholder="sk-ant-...",
-            )
-        ],
-    ),
-    ProviderSchema(
-        id="ollama",
-        label="Ollama (本地)",
-        hint="需要本机跑 ollama serve",
-        requires_key=False,
-        default_model="ollama/qwen2.5:7b",
-        fields=[
-            ProviderField(
-                name="base_url", label="ollamaHost", required=False,
-                default="http://127.0.0.1:11434",
-                placeholder="http://127.0.0.1:11434",
-            ),
-            ProviderField(
-                name="model", label="model", required=True,
-                default="ollama/qwen2.5:7b",
-                placeholder="qwen2.5:7b",
-            ),
-        ],
-    ),
-    ProviderSchema(
-        id="custom",
-        label="Custom (OpenAI-compatible)",
-        hint="MiniMax / 智谱 / Moonshot / 任意兼容接口",
-        requires_key=True,
-        default_model="",
-        fields=[
-            ProviderField(
-                name="base_url", label="baseUrl", required=True,
-                placeholder="https://api.example.com/v1",
-            ),
-            ProviderField(
-                name="model", label="model", required=True,
-                placeholder="model-name",
-            ),
-            ProviderField(
-                name="api_key", label="apiKey", required=True,
-                placeholder="sk-...",
-            ),
         ],
     ),
 ]
@@ -198,10 +145,7 @@ PROVIDER_SCHEMAS: list[ProviderSchema] = [
 # Env var name per provider (None = keyless).
 _PROVIDER_ENV_KEY: dict[str, Optional[str]] = {
     "deepseek": "DEEPSEEK_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-    "ollama": None,
-    "custom": "OPENAI_API_KEY",
+    "minimax": "MINIMAX_API_KEY",
 }
 
 
@@ -300,7 +244,8 @@ def set_active_provider(
 def is_provider_configured(provider: str) -> bool:
     """True if the provider's required env var is set & non-empty.
 
-    For keyless providers (Ollama) this is always True.
+    For keyless providers this is always True (none currently, but
+    the branch is preserved for parity with the base class).
     """
     env_var = _PROVIDER_ENV_KEY.get(provider)
     if env_var is None:

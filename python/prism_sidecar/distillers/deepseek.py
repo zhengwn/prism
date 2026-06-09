@@ -1,4 +1,4 @@
-"""DeepSeek distiller — uses litellm to call deepseek-chat.
+"""DeepSeek distiller — uses litellm to call deepseek-v4-pro.
 
 Why litellm: it gives us one async call interface for OpenAI / Anthropic /
 DeepSeek / etc. We can swap to a local model later by changing the model
@@ -21,7 +21,7 @@ from prism_sidecar.distillers.base import LitellmDistiller
 
 class DeepSeekDistiller(LitellmDistiller):
     provider_name = "deepseek"
-    default_model = "deepseek/deepseek-chat"
+    default_model = "deepseek/deepseek-v4-pro"
     env_key_var = "DEEPSEEK_API_KEY"
 
 

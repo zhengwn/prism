@@ -301,27 +301,16 @@ function AiSection() {
   );
   const requiresKey = activeSchema?.requiresKey ?? true;
 
-  // Field visibility per provider. Mirrors docs/v0.2a/providers-design.md.
+  // Field visibility per provider. v0.2a+: only 2 providers, both
+  // key-required and both show the model behind the "Advanced" disclosure.
   const showApiKey = requiresKey;
-  const showOllamaHost = activeProvider === "ollama";
-  const showBaseUrl = activeProvider === "custom";
-  // For the 3 key providers the model lives behind an "Advanced" disclosure;
-  // ollama and custom show the model directly because the user is more likely
-  // to want to change it (custom's model is required, ollama's is the whole
-  // point of the setup).
-  const showAdvancedModel = activeProvider !== "ollama" && activeProvider !== "custom";
-  const showInlineModel = activeProvider === "ollama" || activeProvider === "custom";
+  const showAdvancedModel = true;
 
   const apiKeyPlaceholderKey = (() => {
     switch (activeProvider) {
+      case "minimax":
+        return "settings.provider.apiKeyPlaceholderMinimax";
       case "deepseek":
-        return "settings.provider.apiKeyPlaceholderDeepseek";
-      case "openai":
-        return "settings.provider.apiKeyPlaceholderOpenai";
-      case "anthropic":
-        return "settings.provider.apiKeyPlaceholderAnthropic";
-      case "custom":
-        return "settings.provider.apiKeyPlaceholderCustom";
       default:
         return "settings.provider.apiKeyPlaceholderDeepseek";
     }
@@ -341,10 +330,9 @@ function AiSection() {
           update.apiKey = apiKey.trim();
         }
       }
-      if (showOllamaHost && baseUrl.trim()) {
-        update.baseUrl = baseUrl.trim();
-      }
-      if (showBaseUrl && baseUrl.trim()) {
+      if (baseUrl.trim()) {
+        // Power-user override — the sidecar schema doesn't surface this
+        // field in the UI but the active-provider marker accepts it.
         update.baseUrl = baseUrl.trim();
       }
       if (model.trim()) {
@@ -445,7 +433,7 @@ function AiSection() {
           )}
         </div>
 
-        {/* API key (for the 3 key providers + custom) */}
+        {/* API key (both providers are key-required) */}
         {showApiKey && (
           <div className="space-y-1.5">
             <label
@@ -487,82 +475,6 @@ function AiSection() {
             <p className="text-xs text-muted-foreground">
               {t("settings.apiKeyDescription")}
             </p>
-          </div>
-        )}
-
-        {/* No key needed hint for Ollama */}
-        {!showApiKey && (
-          <p className="text-xs text-muted-foreground" data-testid="provider-no-key-hint">
-            {t("settings.provider.noKeyNeeded")}
-          </p>
-        )}
-
-        {/* Ollama host — only when the user picked ollama */}
-        {showOllamaHost && (
-          <div className="space-y-1.5">
-            <label
-              htmlFor="provider-ollama-host"
-              className="text-sm font-medium"
-            >
-              {t("settings.provider.ollamaHost")}
-            </label>
-            <Input
-              id="provider-ollama-host"
-              data-testid="provider-ollama-host"
-              type="text"
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder="http://127.0.0.1:11434"
-              disabled={saveMut.isPending}
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <p className="text-xs text-muted-foreground">
-              {t("settings.provider.ollamaHostHint")}
-            </p>
-          </div>
-        )}
-
-        {/* Base URL — only when the user picked custom */}
-        {showBaseUrl && (
-          <div className="space-y-1.5">
-            <label
-              htmlFor="provider-base-url"
-              className="text-sm font-medium"
-            >
-              {t("settings.provider.baseUrl")}
-            </label>
-            <Input
-              id="provider-base-url"
-              data-testid="provider-base-url"
-              type="text"
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder={t("settings.provider.baseUrlPlaceholder")}
-              disabled={saveMut.isPending}
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </div>
-        )}
-
-        {/* Model — inline for ollama and custom, advanced disclosure otherwise */}
-        {showInlineModel && (
-          <div className="space-y-1.5">
-            <label htmlFor="provider-model" className="text-sm font-medium">
-              {t("settings.provider.model")}
-            </label>
-            <Input
-              id="provider-model"
-              data-testid="provider-model"
-              type="text"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder={activeSchema?.defaultModel ?? ""}
-              disabled={saveMut.isPending}
-              autoComplete="off"
-              spellCheck={false}
-            />
           </div>
         )}
 

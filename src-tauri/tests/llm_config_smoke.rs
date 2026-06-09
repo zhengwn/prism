@@ -1,5 +1,4 @@
-//! Smoke test for the v0.2a-providers multi-slot keychain + custom-config
-//! JSON serialization.
+//! Smoke test for the v0.2a+ keychain + JSON serialization layout.
 //!
 //! Run with `cargo test --test llm_config_smoke` or just `cargo test`.
 //!
@@ -21,9 +20,8 @@ use prism_lib::secrets;
 
 #[test]
 fn llm_key_username_format() {
-    assert_eq!(secrets::llm_key_username("openai"), "llm-key:openai");
+    assert_eq!(secrets::llm_key_username("minimax"), "llm-key:minimax");
     assert_eq!(secrets::llm_key_username("deepseek"), "llm-key:deepseek");
-    assert_eq!(secrets::llm_key_username("custom"), "llm-key:custom");
     // Unknown providers are still stringified the same way — the helper is
     // a pure formatter, validation lives in `is_known_provider`.
     assert_eq!(secrets::llm_key_username("nope"), "llm-key:nope");
@@ -31,7 +29,7 @@ fn llm_key_username_format() {
 
 #[test]
 fn is_known_provider_recognises_canonical_ids() {
-    for id in ["deepseek", "openai", "anthropic", "ollama", "custom"] {
+    for id in ["deepseek", "minimax"] {
         assert!(
             secrets::is_known_provider(id),
             "expected {id} to be a known provider"
@@ -40,18 +38,17 @@ fn is_known_provider_recognises_canonical_ids() {
     assert!(!secrets::is_known_provider(""));
     assert!(!secrets::is_known_provider("gpt-5"));
     assert!(!secrets::is_known_provider("DEEPSEEK"));
+    // v0.2a- removed providers must NOT be accepted.
+    assert!(!secrets::is_known_provider("openai"));
+    assert!(!secrets::is_known_provider("anthropic"));
+    assert!(!secrets::is_known_provider("ollama"));
+    assert!(!secrets::is_known_provider("custom"));
 }
 
 #[test]
 fn default_model_per_provider() {
-    assert_eq!(secrets::default_model_for("deepseek"), Some("deepseek-chat"));
-    assert_eq!(secrets::default_model_for("openai"), Some("gpt-4o-mini"));
-    assert_eq!(
-        secrets::default_model_for("anthropic"),
-        Some("claude-3-5-sonnet-20241022")
-    );
-    assert_eq!(secrets::default_model_for("ollama"), Some("qwen2.5:7b"));
-    assert_eq!(secrets::default_model_for("custom"), None);
+    assert_eq!(secrets::default_model_for("deepseek"), Some("deepseek-v4-pro"));
+    assert_eq!(secrets::default_model_for("minimax"), Some("MiniMax-M3"));
     assert_eq!(secrets::default_model_for("nope"), None);
 }
 
@@ -140,51 +137,50 @@ fn multi_slot_keychain_roundtrip() {
     let service = unique_service("multi-slot");
 
     // Sanity: all usernames should be distinct so the slots don't collide.
-    let u_openai = secrets::llm_key_username("openai");
-    let u_anthropic = secrets::llm_key_username("anthropic");
+    let u_minimax = secrets::llm_key_username("minimax");
     let u_active = secrets::USERNAME_LLM_PROVIDER_ACTIVE.to_string();
     let u_custom = secrets::USERNAME_LLM_CONFIG_CUSTOM.to_string();
-    let names: Vec<&str> = vec![&u_openai, &u_anthropic, &u_active, &u_custom];
+    let names: Vec<&str> = vec![&u_minimax, &u_active, &u_custom];
     for (i, a) in names.iter().enumerate() {
         for b in names.iter().skip(i + 1) {
             assert_ne!(a, b, "slot names must be unique: {a} vs {b}");
         }
     }
 
-    // 1. Set active = openai
-    raw_set(&service, &u_active, "openai");
-    // 2. Write openai key
-    raw_set(&service, &u_openai, "sk-test-openai-xxxxxxxxxxxxxxx");
+    // 1. Set active = minimax
+    raw_set(&service, &u_active, "minimax");
+    // 2. Write minimax key
+    raw_set(&service, &u_minimax, "ey-test-minimax-xxxxxxxxxxxxxx");
 
     // 3. Read back
-    assert_eq!(raw_get(&service, &u_active).as_deref(), Some("openai"));
+    assert_eq!(raw_get(&service, &u_active).as_deref(), Some("minimax"));
     // 4. Key roundtrips
     assert_eq!(
-        raw_get(&service, &u_openai).as_deref(),
-        Some("sk-test-openai-xxxxxxxxxxxxxxx")
+        raw_get(&service, &u_minimax).as_deref(),
+        Some("ey-test-minimax-xxxxxxxxxxxxxx")
     );
 
-    // 5. Switch to anthropic
-    raw_set(&service, &u_active, "anthropic");
-    raw_set(&service, &u_anthropic, "sk-ant-test-yyyyyyyyyyyyyyy");
+    // 5. Switch to deepseek
+    raw_set(&service, &u_active, "deepseek");
+    raw_set(&service, "llm-key:deepseek", "sk-test-deepseek-yyyyyyyyyyy");
 
     // 6. Active pointer updated
-    assert_eq!(raw_get(&service, &u_active).as_deref(), Some("anthropic"));
-    // 7. Anthropic key readable
+    assert_eq!(raw_get(&service, &u_active).as_deref(), Some("deepseek"));
+    // 7. DeepSeek key readable
     assert_eq!(
-        raw_get(&service, &u_anthropic).as_deref(),
-        Some("sk-ant-test-yyyyyyyyyyyyyyy")
+        raw_get(&service, "llm-key:deepseek").as_deref(),
+        Some("sk-test-deepseek-yyyyyyyyyyy")
     );
-    // 8. OpenAI key still there (we don't delete on provider switch)
+    // 8. MiniMax key still there (we don't delete on provider switch)
     assert_eq!(
-        raw_get(&service, &u_openai).as_deref(),
-        Some("sk-test-openai-xxxxxxxxxxxxxxx")
+        raw_get(&service, &u_minimax).as_deref(),
+        Some("ey-test-minimax-xxxxxxxxxxxxxx")
     );
 
-    // 9. Custom config slot — JSON blob
+    // 9. Custom config slot (used for MiniMax base_url + model overrides)
     let cfg = secrets::CustomLlmConfig {
-        base_url: "https://api.deepseek.com/v1".to_string(),
-        model: "deepseek-reasoner".to_string(),
+        base_url: "https://api.minimaxi.com/v1".to_string(),
+        model: "MiniMax-M3-highspeed".to_string(),
     };
     let blob = serde_json::to_string(&cfg).expect("serialize");
     raw_set(&service, &u_custom, &blob);
@@ -195,8 +191,8 @@ fn multi_slot_keychain_roundtrip() {
 
     // Cleanup
     raw_delete(&service, &u_active);
-    raw_delete(&service, &u_openai);
-    raw_delete(&service, &u_anthropic);
+    raw_delete(&service, &u_minimax);
+    raw_delete(&service, "llm-key:deepseek");
     raw_delete(&service, &u_custom);
 }
 
@@ -228,10 +224,10 @@ fn llm_config_response_serialises_camel_case() {
     // drops `rename_all = "camelCase"`, the JS side would see `base_url` and
     // break (LlmConfig.baseUrl would be undefined).
     let resp = secrets::LlmConfigResponse {
-        provider: "ollama".to_string(),
+        provider: "minimax".to_string(),
         configured: true,
-        model: Some("qwen2.5:7b".to_string()),
-        base_url: Some("http://127.0.0.1:11434".to_string()),
+        model: Some("MiniMax-M3".to_string()),
+        base_url: Some("https://api.minimaxi.com/v1".to_string()),
     };
     let json = serde_json::to_string(&resp).expect("serialize");
     assert!(
@@ -244,9 +240,9 @@ fn llm_config_response_serialises_camel_case() {
     );
     // `provider`, `configured`, `model` are already single-word — they
     // should serialise as-is. Guard against any future global rename.
-    assert!(json.contains("\"provider\":\"ollama\""));
+    assert!(json.contains("\"provider\":\"minimax\""));
     assert!(json.contains("\"configured\":true"));
-    assert!(json.contains("\"model\":\"qwen2.5:7b\""));
+    assert!(json.contains("\"model\":\"MiniMax-M3\""));
 }
 
 #[test]
@@ -255,17 +251,17 @@ fn llm_config_input_deserialises_camel_case() {
     // serde accepts that exact shape — the deserialised struct should
     // carry the values under their snake_case field names.
     let raw = r#"{
-        "provider": "openai",
-        "apiKey": "sk-test-camelcase",
-        "model": "gpt-4o-mini",
-        "baseUrl": "https://api.openai.com/v1"
+        "provider": "minimax",
+        "apiKey": "ey-test-camelcase",
+        "model": "MiniMax-M3",
+        "baseUrl": "https://api.minimaxi.com/v1"
     }"#;
     let input: secrets::LlmConfigInput =
         serde_json::from_str(raw).expect("camelCase input must deserialise");
-    assert_eq!(input.provider, "openai");
-    assert_eq!(input.api_key.as_deref(), Some("sk-test-camelcase"));
-    assert_eq!(input.model.as_deref(), Some("gpt-4o-mini"));
-    assert_eq!(input.base_url.as_deref(), Some("https://api.openai.com/v1"));
+    assert_eq!(input.provider, "minimax");
+    assert_eq!(input.api_key.as_deref(), Some("ey-test-camelcase"));
+    assert_eq!(input.model.as_deref(), Some("MiniMax-M3"));
+    assert_eq!(input.base_url.as_deref(), Some("https://api.minimaxi.com/v1"));
 
     // Sanity: a snake_case payload DOES technically deserialise (because
     // `#[serde(default)]` lets unknown fields be silently dropped) — but
@@ -275,10 +271,10 @@ fn llm_config_input_deserialises_camel_case() {
     // failure rather than a silent regression. The positive case above is
     // what actually matters in production: callers must send camelCase.
     let snake = r#"{
-        "provider": "openai",
+        "provider": "minimax",
         "api_key": "sk-test",
-        "model": "gpt-4o-mini",
-        "base_url": "https://api.openai.com/v1"
+        "model": "MiniMax-M3",
+        "base_url": "https://api.minimaxi.com/v1"
     }"#;
     let parsed: secrets::LlmConfigInput =
         serde_json::from_str(snake).expect("snake_case deserialises but drops data");
@@ -300,7 +296,7 @@ fn provider_schema_serialises_camel_case() {
     // Pin that `requiresKey` / `defaultModel` are camelCase so the TS
     // `ProviderSchema` type matches.
     let schemas = secrets::get_provider_schema();
-    assert!(!schemas.is_empty(), "schema list should not be empty");
+    assert_eq!(schemas.len(), 2, "v0.2a+ supports exactly 2 providers");
     let json = serde_json::to_string(&schemas.first().unwrap()).expect("serialize");
     assert!(
         json.contains("\"requiresKey\""),

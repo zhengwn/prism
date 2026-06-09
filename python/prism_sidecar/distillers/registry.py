@@ -18,12 +18,9 @@ from __future__ import annotations
 
 from typing import Type
 
-from prism_sidecar.distillers.anthropic import AnthropicDistiller
 from prism_sidecar.distillers.base import Distiller, LitellmDistiller
-from prism_sidecar.distillers.custom import CustomDistiller
 from prism_sidecar.distillers.deepseek import DeepSeekDistiller
-from prism_sidecar.distillers.ollama import OllamaDistiller
-from prism_sidecar.distillers.openai import OpenAIDistiller
+from prism_sidecar.distillers.minimax import MiniMaxDistiller
 
 
 class _ProviderSpec:
@@ -54,33 +51,12 @@ PROVIDERS: dict[str, _ProviderSpec] = {
         default_model=DeepSeekDistiller.default_model,
         cls=DeepSeekDistiller,
     ),
-    "openai": _ProviderSpec(
-        id="openai",
-        label="OpenAI",
+    "minimax": _ProviderSpec(
+        id="minimax",
+        label="MiniMax",
         requires_key=True,
-        default_model=OpenAIDistiller.default_model,
-        cls=OpenAIDistiller,
-    ),
-    "anthropic": _ProviderSpec(
-        id="anthropic",
-        label="Anthropic",
-        requires_key=True,
-        default_model=AnthropicDistiller.default_model,
-        cls=AnthropicDistiller,
-    ),
-    "ollama": _ProviderSpec(
-        id="ollama",
-        label="Ollama (本地)",
-        requires_key=False,
-        default_model=OllamaDistiller.default_model,
-        cls=OllamaDistiller,
-    ),
-    "custom": _ProviderSpec(
-        id="custom",
-        label="Custom (OpenAI-compatible)",
-        requires_key=True,
-        default_model=CustomDistiller.default_model,
-        cls=CustomDistiller,
+        default_model=MiniMaxDistiller.default_model,
+        cls=MiniMaxDistiller,
     ),
 }
 
@@ -93,12 +69,11 @@ def get_distiller(
     """Construct a distiller for the given provider.
 
     ``model`` and ``base_url`` are optional overrides pulled from
-    ``active_provider.json``. Provider-specific kwargs (e.g. Ollama's
-    ``api_base``, Custom's ``api_base`` + ``OPENAI_API_KEY``) are
-    handled inside each distiller's ``__init__``.
+    ``active_provider.json``. Provider-specific kwargs (e.g. MiniMax's
+    ``api_base``) are handled inside each distiller's ``__init__``.
 
     Raises:
-        ValueError: if ``provider`` is not one of the 5 known ids.
+        ValueError: if ``provider`` is not one of the known ids.
     """
     spec = PROVIDERS.get(provider)
     if spec is None:
@@ -113,7 +88,7 @@ def get_distiller(
     if model:
         kwargs["model"] = model
     if base_url:
-        # Only Ollama and Custom use this; others ignore it.
+        # MiniMax uses this; DeepSeek ignores it.
         kwargs["api_base"] = base_url
     return cls(**kwargs)  # type: ignore[abstract]
 

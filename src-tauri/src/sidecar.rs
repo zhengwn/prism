@@ -4,7 +4,7 @@
  * Lifecycle:
  *   - On Tauri startup, spawn `uv run prism-sidecar` from the python/ dir.
  *   - Read the active LLM provider from the OS keychain.
- *   - Inject the appropriate API key (and base URL for ollama/custom) into
+ *   - Inject the appropriate API key (and base URL for MiniMax) into
  *     the child process's environment.
  *   - Persist a small JSON marker (`~/.prism/active_provider.json`) so the
  *     sidecar can pick up the active provider on its own at startup.
@@ -15,12 +15,11 @@
  * Failure mode: if uv / python isn't installed, log a friendly message but
  * keep the Tauri app running. The user can start the sidecar manually.
  *
- * v0.2a → v0.2a-providers: env injection is now provider-aware. The contract
- * with the Python sidecar is unchanged for the deepseek case (still
- * `DEEPSEEK_API_KEY=…`); the new providers add `OPENAI_API_KEY` /
- * `ANTHROPIC_API_KEY` / `OLLAMA_API_BASE` / `OPENAI_API_BASE` /
- * `PRISM_ACTIVE_PROVIDER` as needed. The sidecar reads whichever env vars it
- * needs to know the active provider.
+ * v0.2a+ (post provider pruning): env injection is provider-aware across
+ * two providers — `DEEPSEEK_API_KEY` for deepseek, `MINIMAX_API_KEY` +
+ * `MINIMAX_API_BASE` for MiniMax (the OpenAI-compatible endpoint at
+ * api.minimaxi.com). The sidecar reads whichever env vars it needs to
+ * know the active provider.
  */
 
 use std::io::{BufRead, BufReader};
@@ -137,51 +136,25 @@ fn build_command<R: Runtime>(
                 );
             }
         }
-        "openai" => {
-            if let Some(key) = secrets::read_llm_key(app, "openai") {
-                cmd.env(secrets::ENV_OPENAI_API_KEY, key);
-                eprintln!("[prism] injected {}", secrets::ENV_OPENAI_API_KEY);
+        "minimax" => {
+            if let Some(key) = secrets::read_llm_key(app, "minimax") {
+                cmd.env(secrets::ENV_MINIMAX_API_KEY, key);
+                eprintln!("[prism] injected {}", secrets::ENV_MINIMAX_API_KEY);
             } else {
-                eprintln!("[prism] provider=openai but no key in keychain");
+                eprintln!("[prism] provider=minimax but no key in keychain");
             }
-        }
-        "anthropic" => {
-            if let Some(key) = secrets::read_llm_key(app, "anthropic") {
-                cmd.env(secrets::ENV_ANTHROPIC_API_KEY, key);
-                eprintln!("[prism] injected {}", secrets::ENV_ANTHROPIC_API_KEY);
-            } else {
-                eprintln!("[prism] provider=anthropic but no key in keychain");
-            }
-        }
-        "ollama" => {
-            // No key — only a base URL. Default to localhost.
-            let base_url = secrets::DEFAULT_OLLAMA_BASE_URL.to_string();
-            cmd.env(secrets::ENV_OLLAMA_API_BASE, &base_url);
+            // MiniMax uses the OpenAI-compatible protocol — always set
+            // the base URL to the canonical endpoint unless the legacy
+            // override blob says otherwise.
+            let base_url = secrets::read_custom_config(app)
+                .map(|c| c.base_url)
+                .unwrap_or_else(|| secrets::DEFAULT_MINIMAX_API_BASE.to_string());
+            cmd.env(secrets::ENV_MINIMAX_API_BASE, &base_url);
             eprintln!(
                 "[prism] injected {}={}",
-                secrets::ENV_OLLAMA_API_BASE,
+                secrets::ENV_MINIMAX_API_BASE,
                 base_url
             );
-        }
-        "custom" => {
-            if let Some(key) = secrets::read_llm_key(app, "custom") {
-                cmd.env(secrets::ENV_OPENAI_API_KEY, key);
-            } else {
-                eprintln!("[prism] provider=custom but no key in keychain");
-            }
-            if let Some(cfg) = secrets::read_custom_config(app) {
-                cmd.env(secrets::ENV_OPENAI_API_BASE, &cfg.base_url);
-                eprintln!(
-                    "[prism] injected {}={}",
-                    secrets::ENV_OPENAI_API_BASE,
-                    cfg.base_url
-                );
-                // The model goes into the active-provider marker so the sidecar
-                // can pick it up. We don't have a dedicated PRISM_CUSTOM_MODEL
-                // env var yet — keeping the contract minimal.
-            } else {
-                eprintln!("[prism] provider=custom but no base_url/model in keychain");
-            }
         }
         other => {
             eprintln!(
@@ -228,7 +201,11 @@ pub fn spawn<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     })?;
 
     // Persist a marker file for the sidecar to read on its own startup.
-    let model_hint = if provider == "custom" {
+    // For MiniMax we stash the (possibly user-overridden) model into the
+    // active-provider marker so the sidecar can pick it up without a
+    // dedicated env var. DeepSeek uses the canonical model hard-coded in
+    // the sidecar's `default_model` so no hint is needed.
+    let model_hint = if provider == "minimax" {
         secrets::read_custom_config(app).map(|c| c.model)
     } else {
         None
@@ -350,24 +327,29 @@ pub fn apply_llm_config<R: Runtime>(
     // 2. Active provider pointer.
     secrets::write_active_provider(app, &config.provider)?;
 
-    // 3. Custom-mode base_url + model.
-    if config.provider == "custom" {
+    // 3. MiniMax override blob (base_url + model). Only persisted when
+    // the user supplies at least one of them; both are optional because
+    // the sidecar already knows sensible defaults.
+    if config.provider == "minimax" {
         let base_url = config
             .base_url
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| "custom provider requires base_url".to_string())?
-            .to_string();
+            .map(|s| s.to_string());
         let model = config
             .model
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| "custom provider requires model".to_string())?
-            .to_string();
-        let cfg = secrets::CustomLlmConfig { base_url, model };
-        secrets::write_custom_config(app, &cfg)?;
+            .map(|s| s.to_string());
+        if base_url.is_some() || model.is_some() {
+            let cfg = secrets::CustomLlmConfig {
+                base_url: base_url.unwrap_or_else(|| secrets::DEFAULT_MINIMAX_API_BASE.to_string()),
+                model: model.unwrap_or_else(|| "MiniMax-M3".to_string()),
+            };
+            secrets::write_custom_config(app, &cfg)?;
+        }
     }
 
     Ok(())

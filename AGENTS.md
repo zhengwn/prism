@@ -144,6 +144,86 @@ best-practice, so they live here rather than in agent memory.
 - **Key exposure boundary:** 前端只能调 `getApiKeyStatus()` 拿到 `{configured: boolean}`，**永远拿不到 key 值**；key 仅在 Tauri 启动 sidecar 时通过 `cmd.env("DEEPSEEK_API_KEY", key)` 注入子进程环境变量
 - **User data (sources, items) stays on disk locally** (`~/.prism/data.db`) — no telemetry in v0.2a
 
+## LLM provider architecture (v0.2a+)
+
+Sidecar supports **2 LLM providers** behind one `LitellmDistiller`
+base class — pruned from the original 5-provider v0.2a design. **Read
+this before adding a 3rd provider or touching the distiller layer.**
+
+```
+python/prism_sidecar/
+  settings.py                # PROVIDER_SCHEMAS + active_provider.json R/W
+  distillers/
+    base.py                  # LitellmDistiller + looks_like_key_invalid
+    deepseek.py              # DeepSeekDistiller
+    minimax.py               # MiniMaxDistiller (OpenAI-compatible protocol)
+    registry.py              # get_distiller(provider, model?, base_url?)
+```
+
+| Provider id | Default model           | Env key var          | Default base URL                  |
+|-------------|-------------------------|----------------------|-----------------------------------|
+| `deepseek`  | `deepseek/deepseek-v4-pro` | `DEEPSEEK_API_KEY`   | (canonical, no override)          |
+| `minimax`   | `openai/MiniMax-M3`        | `MINIMAX_API_KEY`    | `https://api.minimaxi.com/v1`     |
+
+**Adding a new provider** (3 mandatory steps + tests):
+1. `distillers/<name>.py` — subclass `LitellmDistiller`; set
+   `provider_name`, `default_model` (full litellm prefix like
+   `"mistral/mistral-large-latest"`), `env_key_var` (or `None` for
+   keyless). Override `_extra_litellm_kwargs()` only if it needs a
+   non-default `api_base` or other kwarg.
+2. `distillers/registry.py` — add to `PROVIDERS` dict.
+3. `settings.py` — append a `ProviderSchema(...)` to `PROVIDER_SCHEMAS`
+   AND add the env-var name to `_PROVIDER_ENV_KEY` (or `None` for
+   keyless). Then frontend + i18n keys (`hint<Name>` etc.) — owned by
+   `frontend-expert`.
+
+**Provider-specific invariants (do not break):**
+- **MiniMax wraps with `openai/` prefix.** User passes `"M3-highspeed"`,
+  `MiniMaxDistiller` produces `openai/M3-highspeed` so it routes
+  through litellm's OpenAI-compatible adapter against
+  `https://api.minimaxi.com/v1`. If the user already typed
+  `openai/...`, leave it alone.
+- **`env_key_var = None` is the keyless path** (no provider uses it
+  today, but the base class's `if self.env_key_var is not None: ...`
+  branch must stay). Pass `api_key=None` to litellm, not `""` (empty
+  string is "invalid api key" to litellm).
+- **Distillers are read from env, never from disk.** Active
+  provider id is in `~/.prism/active_provider.json`; the key is in
+  the OS keychain; Tauri injects it as env var when spawning the
+  sidecar. Sidecar never reads the keychain directly.
+- **POST `/api/settings/llm` hard-rejects any `apiKey` field**
+  (HTTP 400). Keys transit only through Tauri's keychain + env
+  injection — never through sidecar HTTP. The
+  `LlmConfigUpdate.api_key = Field(exclude=True)` + the route's
+  explicit `if payload.api_key not in (None, "")` check are
+  intentionally belt-and-suspenders; keep both layers.
+- **camelCase JSON is the contract.** Pydantic models use
+  `ConfigDict(alias_generator=to_camel, populate_by_name=True)` on
+  `_CamelBase`. Routes use `response_model_by_alias=True`. The
+  frontend's `src/types/index.ts` matches these aliased names —
+  if you add a new field, update both sides.
+- **Lifespan writes the default file.** First start of a fresh
+  install creates `~/.prism/active_provider.json` with
+  `{"provider": "deepseek"}` (no model/base_url). The
+  `pipeline/sync.py` and `pipeline/distill.py` `is_distiller_configured()`
+  helper (in `config.py`) is the **legacy v0.1** DeepSeek-only
+  check; new code should use `settings.is_provider_configured(provider)`
+  which checks the *active* provider's env var.
+
+**Active-provider change requires a sidecar restart (Tauri-owned).**
+The `POST /api/settings/llm` endpoint does a best-effort in-process
+hot-swap of a cached distiller reference, but the pipeline rebuilds
+the distiller per job from the on-disk file, and key env vars don't
+change without a process restart. The reliable flow is
+Tauri→keychain write→`sidecar::restart()` (kill + respawn with
+fresh env) — owned by `tauri-expert` (see commit `e460389`).
+
+**Tauri-side `KNOWN_PROVIDERS`** in `src-tauri/src/secrets.rs` must
+stay in lockstep with the Python `PROVIDER_SCHEMAS` list. The
+`default_model_for()` and `get_provider_schema()` Tauri commands
+both hard-code the same 2 providers — they're the Settings-UI
+fallback when the sidecar isn't up yet.
+
 ## Theme system (v0.1)
 
 Three-state model: `light` / `dark` / `system`. `system` live-follows

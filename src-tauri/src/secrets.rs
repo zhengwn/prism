@@ -6,16 +6,14 @@
  * ecosystem. On macOS this lands in Keychain Access, on Windows in the
  * Credential Manager, and on Linux in the Secret Service (libsecret).
  *
- * # v0.2a multi-provider keychain layout
+ * # v0.2a+ keychain layout (DeepSeek + MiniMax only)
  *
  * | Username                       | Value                              | Purpose                          |
  * |--------------------------------|------------------------------------|----------------------------------|
  * | `llm-provider:active`          | provider id string (`"deepseek"`)  | which provider is active         |
  * | `llm-key:deepseek`             | api key                            | DeepSeek key                     |
- * | `llm-key:openai`               | api key                            | OpenAI key                       |
- * | `llm-key:anthropic`            | api key                            | Anthropic key                    |
- * | `llm-key:custom`               | api key                            | Custom OpenAI-compatible key     |
- * | `llm-config:custom`            | JSON `{base_url, model}`           | Custom mode base_url + model     |
+ * | `llm-key:minimax`              | api key                            | MiniMax M3 key                   |
+ * | `llm-config:custom`            | JSON `{base_url, model}`           | (legacy) MiniMax override blob   |
  *
  * All entries live under the same service name (`com.prism.desktop`) so they
  * show up grouped in the OS keychain UI.
@@ -58,11 +56,11 @@ pub const SERVICE: &str = "com.prism.desktop";
 // ---------------------------------------------------------------------------
 
 /// Username that stores the id of the currently active LLM provider
-/// (e.g. `"deepseek"`, `"openai"`, `"anthropic"`, `"ollama"`, `"custom"`).
+/// (e.g. `"deepseek"`, `"minimax"`).
 pub const USERNAME_LLM_PROVIDER_ACTIVE: &str = "llm-provider:active";
 
 /// Username that stores the JSON `{"base_url": "...", "model": "..."}` blob
-/// for the `custom` provider.
+/// for the `minimax` provider (kept for parity with the old custom slot).
 pub const USERNAME_LLM_CONFIG_CUSTOM: &str = "llm-config:custom";
 
 /// Legacy v0.2a username. Read once at first launch, then deleted.
@@ -81,21 +79,20 @@ pub fn llm_key_username(provider: &str) -> String {
 // ---------------------------------------------------------------------------
 
 pub const ENV_DEEPSEEK_API_KEY: &str = "DEEPSEEK_API_KEY";
-pub const ENV_OPENAI_API_KEY: &str = "OPENAI_API_KEY";
-pub const ENV_ANTHROPIC_API_KEY: &str = "ANTHROPIC_API_KEY";
-pub const ENV_OLLAMA_API_BASE: &str = "OLLAMA_API_BASE";
-pub const ENV_OPENAI_API_BASE: &str = "OPENAI_API_BASE";
+pub const ENV_MINIMAX_API_KEY: &str = "MINIMAX_API_KEY";
+pub const ENV_MINIMAX_API_BASE: &str = "MINIMAX_API_BASE";
 pub const ENV_PRISM_ACTIVE_PROVIDER: &str = "PRISM_ACTIVE_PROVIDER";
 
-/// Default Ollama host. Used when no `llm-config:ollama.base_url` is set.
-pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
+/// Default MiniMax API base URL. Used when no `llm-config:custom.base_url`
+/// is set. MiniMax exposes an OpenAI-compatible endpoint here.
+pub const DEFAULT_MINIMAX_API_BASE: &str = "https://api.minimaxi.com/v1";
 
 // ---------------------------------------------------------------------------
 // Known provider ids.
 // ---------------------------------------------------------------------------
 
 /// Canonical list of provider ids. Order matches the Settings UI dropdown.
-pub const KNOWN_PROVIDERS: &[&str] = &["deepseek", "openai", "anthropic", "ollama", "custom"];
+pub const KNOWN_PROVIDERS: &[&str] = &["deepseek", "minimax"];
 
 /// Returns `true` if the given string is one of the known provider ids.
 pub fn is_known_provider(p: &str) -> bool {
@@ -383,14 +380,13 @@ pub fn clear_api_key(app: tauri::AppHandle) -> Result<serde_json::Value, String>
 // sidecar after writing the keychain.
 // ---------------------------------------------------------------------------
 
-/// Default models for the preset providers. The `custom` provider's model
-/// is user-supplied and lives in the keychain as `llm-config:custom`.
+/// Default models for the preset providers. The `minimax` provider's
+/// model is hard-coded (M3 with OpenAI-compatible prefix) so the
+/// Python sidecar's `default_model` and the Tauri schema agree.
 pub fn default_model_for(provider: &str) -> Option<&'static str> {
     match provider {
-        "deepseek" => Some("deepseek-chat"),
-        "openai" => Some("gpt-4o-mini"),
-        "anthropic" => Some("claude-3-5-sonnet-20241022"),
-        "ollama" => Some("qwen2.5:7b"),
+        "deepseek" => Some("deepseek-v4-pro"),
+        "minimax" => Some("MiniMax-M3"),
         _ => None,
     }
 }
@@ -400,25 +396,18 @@ pub fn default_model_for(provider: &str) -> Option<&'static str> {
 /// post-write state).
 pub fn build_llm_config_response<R: Runtime>(app: &tauri::AppHandle<R>) -> LlmConfigResponse {
     let provider = read_active_provider(app).unwrap_or_else(|| "deepseek".to_string());
-    let configured = match provider.as_str() {
-        // Ollama needs no key — it always counts as "configured" (it can
-        // still fail at request time if the local server isn't running,
-        // but that's a runtime concern, not a keychain one).
-        "ollama" => true,
-        "custom" => read_llm_key(app, "custom").is_some()
-            && read_custom_config(app).is_some(),
-        other => read_llm_key(app, other).is_some(),
-    };
+    // v0.2a+: both supported providers (DeepSeek, MiniMax) require a
+    // key — `configured` is just "is the keychain slot populated?".
+    let configured = read_llm_key(app, &provider).is_some();
 
-    let model = match provider.as_str() {
-        "custom" => read_custom_config(app).map(|c| c.model),
-        other => default_model_for(other).map(|s| s.to_string()),
-    };
+    let model = default_model_for(&provider).map(|s| s.to_string());
 
-    let base_url = match provider.as_str() {
-        "ollama" => Some(DEFAULT_OLLAMA_BASE_URL.to_string()),
-        "custom" => read_custom_config(app).map(|c| c.base_url),
-        _ => None,
+    // Only MiniMax exposes a user-overridable base_url (its OpenAI-
+    // compatible endpoint). DeepSeek uses the canonical API directly.
+    let base_url = if provider == "minimax" {
+        Some(DEFAULT_MINIMAX_API_BASE.to_string())
+    } else {
+        None
     };
 
     LlmConfigResponse {
@@ -446,40 +435,15 @@ pub fn get_provider_schema() -> Vec<ProviderSchema> {
             id: "deepseek".to_string(),
             label: "DeepSeek".to_string(),
             requires_key: true,
-            default_model: "deepseek-chat".to_string(),
+            default_model: "deepseek-v4-pro".to_string(),
             fields: vec!["api_key".to_string()],
         },
         ProviderSchema {
-            id: "openai".to_string(),
-            label: "OpenAI".to_string(),
+            id: "minimax".to_string(),
+            label: "MiniMax".to_string(),
             requires_key: true,
-            default_model: "gpt-4o-mini".to_string(),
+            default_model: "MiniMax-M3".to_string(),
             fields: vec!["api_key".to_string()],
-        },
-        ProviderSchema {
-            id: "anthropic".to_string(),
-            label: "Anthropic".to_string(),
-            requires_key: true,
-            default_model: "claude-3-5-sonnet-20241022".to_string(),
-            fields: vec!["api_key".to_string()],
-        },
-        ProviderSchema {
-            id: "ollama".to_string(),
-            label: "Ollama (本地)".to_string(),
-            requires_key: false,
-            default_model: "qwen2.5:7b".to_string(),
-            fields: vec!["base_url".to_string(), "model".to_string()],
-        },
-        ProviderSchema {
-            id: "custom".to_string(),
-            label: "Custom (OpenAI-compatible)".to_string(),
-            requires_key: true,
-            default_model: String::new(),
-            fields: vec![
-                "api_key".to_string(),
-                "base_url".to_string(),
-                "model".to_string(),
-            ],
         },
     ]
 }

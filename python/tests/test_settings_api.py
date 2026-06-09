@@ -32,9 +32,7 @@ async def client(monkeypatch, tmp_path: Path):
     # Ensure no key is set for any provider.
     monkeypatch.setattr(config, "DEEPSEEK_API_KEY", None)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("OLLAMA_API_BASE", raising=False)
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
 
     # Re-point the settings module at the tmp data dir.
     monkeypatch.setattr(settings_mod, "ACTIVE_PROVIDER_PATH", data_dir / "active_provider.json")
@@ -52,13 +50,13 @@ async def client(monkeypatch, tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_get_providers_returns_5(client):
+async def test_get_providers_returns_2(client):
     r = await client.get("/api/settings/providers")
     assert r.status_code == 200
     schemas = r.json()
-    assert len(schemas) == 5
+    assert len(schemas) == 2
     ids = {s["id"] for s in schemas}
-    assert ids == {"deepseek", "openai", "anthropic", "ollama", "custom"}
+    assert ids == {"deepseek", "minimax"}
 
 
 @pytest.mark.asyncio
@@ -67,27 +65,21 @@ async def test_get_providers_shape_for_deepseek(client):
     deepseek = next(s for s in r.json() if s["id"] == "deepseek")
     assert deepseek["label"] == "DeepSeek"
     assert deepseek["requiresKey"] is True
-    assert deepseek["defaultModel"] == "deepseek/deepseek-chat"
+    assert deepseek["defaultModel"] == "deepseek/deepseek-v4-pro"
     assert len(deepseek["fields"]) == 1
     assert deepseek["fields"][0]["name"] == "api_key"
     assert deepseek["fields"][0]["required"] is True
 
 
 @pytest.mark.asyncio
-async def test_get_providers_shape_for_ollama(client):
+async def test_get_providers_shape_for_minimax(client):
     r = await client.get("/api/settings/providers")
-    ollama = next(s for s in r.json() if s["id"] == "ollama")
-    assert ollama["requiresKey"] is False
-    field_names = {f["name"] for f in ollama["fields"]}
-    assert field_names == {"base_url", "model"}
-
-
-@pytest.mark.asyncio
-async def test_get_providers_shape_for_custom(client):
-    r = await client.get("/api/settings/providers")
-    custom = next(s for s in r.json() if s["id"] == "custom")
-    field_names = {f["name"] for f in custom["fields"]}
-    assert field_names == {"base_url", "model", "api_key"}
+    mm = next(s for s in r.json() if s["id"] == "minimax")
+    assert mm["requiresKey"] is True
+    assert mm["defaultModel"] == "openai/MiniMax-M3"
+    assert len(mm["fields"]) == 1
+    assert mm["fields"][0]["name"] == "api_key"
+    assert mm["fields"][0]["required"] is True
 
 
 # ---- /api/settings/llm GET ----------------------------------------------
@@ -143,19 +135,19 @@ async def test_get_llm_reflects_env_key(monkeypatch, tmp_path):
 async def test_post_llm_switches_provider(client):
     r = await client.post(
         "/api/settings/llm",
-        json={"provider": "openai"},
+        json={"provider": "minimax"},
     )
     assert r.status_code == 200
     body = r.json()
-    assert body["provider"] == "openai"
-    # No OPENAI_API_KEY in env → configured False.
+    assert body["provider"] == "minimax"
+    # No MINIMAX_API_KEY in env → configured False.
     assert body["configured"] is False
 
     # The on-disk file is updated.
     path = settings_mod.ACTIVE_PROVIDER_PATH
     assert path.exists()
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["provider"] == "openai"
+    assert payload["provider"] == "minimax"
     assert "api_key" not in payload  # paranoid — never store keys
 
 
@@ -164,19 +156,16 @@ async def test_post_llm_persists_model_and_base_url(client):
     r = await client.post(
         "/api/settings/llm",
         json={
-            "provider": "ollama",
-            "model": "ollama/llama3.1:8b",
-            "base_url": "http://192.168.1.5:11434",
+            "provider": "minimax",
+            "model": "M3-highspeed",
+            "base_url": "https://mirror.example/v1",
         },
     )
     assert r.status_code == 200
     body = r.json()
-    assert body["provider"] == "ollama"
-    assert body["model"] == "ollama/llama3.1:8b"
-    assert body["baseUrl"] == "http://192.168.1.5:11434"
-    # Ollama is keyless → always configured (as long as base_url is
-    # supplied).
-    assert body["configured"] is True
+    assert body["provider"] == "minimax"
+    assert body["model"] == "M3-highspeed"
+    assert body["baseUrl"] == "https://mirror.example/v1"
 
 
 @pytest.mark.asyncio
@@ -198,7 +187,7 @@ async def test_post_llm_rejects_api_key_in_body(client):
     # We bypass Pydantic by sending extra fields in the raw JSON.
     r = await client.post(
         "/api/settings/llm",
-        json={"provider": "openai", "api_key": "sk-stolen"},
+        json={"provider": "minimax", "api_key": "sk-stolen"},
     )
     # Two possible paths: Pydantic rejects via extra="forbid" (422) or
     # we get past and our explicit check returns 400. Either is correct.
@@ -209,14 +198,14 @@ async def test_post_llm_rejects_api_key_in_body(client):
 async def test_post_then_get_round_trips(client):
     r1 = await client.post(
         "/api/settings/llm",
-        json={"provider": "anthropic", "model": "anthropic/claude-3-haiku-20240307"},
+        json={"provider": "minimax", "model": "M3-highspeed"},
     )
     assert r1.status_code == 200
     r2 = await client.get("/api/settings/llm")
     assert r2.status_code == 200
     body = r2.json()
-    assert body["provider"] == "anthropic"
-    assert body["model"] == "anthropic/claude-3-haiku-20240307"
+    assert body["provider"] == "minimax"
+    assert body["model"] == "M3-highspeed"
 
 
 # ---- lifespan writes default file --------------------------------------
@@ -264,25 +253,19 @@ def test_load_active_provider_returns_default_when_missing(tmp_path, monkeypatch
 def test_set_active_provider_persists(tmp_path, monkeypatch):
     path = tmp_path / "ap.json"
     monkeypatch.setattr(settings_mod, "ACTIVE_PROVIDER_PATH", path)
-    cfg = settings_mod.set_active_provider("ollama", model="ollama/llama3", base_url="http://x:11434")
-    assert cfg["provider"] == "ollama"
-    assert cfg["model"] == "ollama/llama3"
-    assert cfg["base_url"] == "http://x:11434"
+    cfg = settings_mod.set_active_provider("minimax", model="M3-highspeed", base_url="https://x/v1")
+    assert cfg["provider"] == "minimax"
+    assert cfg["model"] == "M3-highspeed"
+    assert cfg["base_url"] == "https://x/v1"
     # Re-read from disk to confirm persistence.
     on_disk = json.loads(path.read_text(encoding="utf-8"))
-    assert on_disk["provider"] == "ollama"
+    assert on_disk["provider"] == "minimax"
 
 
 def test_set_active_provider_rejects_unknown(tmp_path, monkeypatch):
     monkeypatch.setattr(settings_mod, "ACTIVE_PROVIDER_PATH", tmp_path / "ap.json")
     with pytest.raises(ValueError):
         settings_mod.set_active_provider("llamastack")
-
-
-def test_is_provider_configured_for_keyless(tmp_path, monkeypatch):
-    """Ollama has no key env var → always configured."""
-    monkeypatch.delenv("OLLAMA_API_BASE", raising=False)
-    assert settings_mod.is_provider_configured("ollama") is True
 
 
 def test_is_provider_configured_for_keyed(monkeypatch):
@@ -292,13 +275,18 @@ def test_is_provider_configured_for_keyed(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-x")
     assert settings_mod.is_provider_configured("deepseek") is True
 
+    """MiniMax needs MINIMAX_API_KEY; absent → not configured."""
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    assert settings_mod.is_provider_configured("minimax") is False
+    monkeypatch.setenv("MINIMAX_API_KEY", "ey-x")
+    assert settings_mod.is_provider_configured("minimax") is True
+
 
 def test_get_llm_status_shape(tmp_path, monkeypatch):
     path = tmp_path / "ap.json"
     monkeypatch.setattr(settings_mod, "ACTIVE_PROVIDER_PATH", path)
-    path.write_text(json.dumps({"provider": "ollama", "model": "ollama/m", "base_url": "http://x:11434"}))
+    path.write_text(json.dumps({"provider": "minimax", "model": "M3", "base_url": "https://x/v1"}))
     status = settings_mod.get_llm_status()
-    assert status.provider == "ollama"
-    assert status.model == "ollama/m"
-    assert status.base_url == "http://x:11434"
-    assert status.configured is True
+    assert status.provider == "minimax"
+    assert status.model == "M3"
+    assert status.base_url == "https://x/v1"

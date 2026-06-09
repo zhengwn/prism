@@ -93,9 +93,10 @@ def test_parse_response_rejects_garbage():
 
 
 def test_deepseek_default_model_string():
-    """The litellm model string must use the deepseek/ prefix."""
+    """The litellm model string must use the deepseek/ prefix and the
+    pinned deepseek-v4-pro model id."""
     d = DeepSeekDistiller(api_key="sk-test", max_retries=0)
-    assert d._model == "deepseek/deepseek-chat"
+    assert d._model == "deepseek/deepseek-v4-pro"
 
 
 def test_deepseek_reads_key_from_env(monkeypatch):
@@ -137,7 +138,7 @@ async def test_distiller_calls_litellm_and_parses(monkeypatch):
     out = await d.distill(SAMPLE_RAW)
 
     assert out.title_zh == "OpenAI 发布 GPT-5"
-    assert captured["kwargs"]["model"] == "deepseek/deepseek-chat"
+    assert captured["kwargs"]["model"] == "deepseek/deepseek-v4-pro"
     assert captured["kwargs"]["api_key"] == "sk-test"
     assert captured["kwargs"]["response_format"] == {"type": "json_object"}
 

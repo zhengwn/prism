@@ -25,12 +25,10 @@ from pydantic import BaseModel
 
 from prism_sidecar import __version__, scheduler, settings, store
 from prism_sidecar.config import (
-    DEEPSEEK_API_KEY,
     DAILY_SYNC_ENABLED,
     DAILY_SYNC_HOUR,
     DAILY_SYNC_TZ,
     PRISM_DB_PATH,
-    is_distiller_configured,
 )
 from prism_sidecar.data.fixtures import SEED_SOURCES
 from prism_sidecar.db import close_db, init_db
@@ -290,7 +288,8 @@ async def lifespan(app: FastAPI):
     )
     log.info(
         "[prism-sidecar] distiller: %s",
-        "configured" if is_distiller_configured() else "NOT configured (DEEPSEEK_API_KEY missing)",
+        "configured" if settings.is_provider_configured(active["provider"])
+        else f"NOT configured ({active['provider']} env key missing)",
     )
 
     await init_db()
@@ -500,8 +499,15 @@ async def trigger_redistill(batch_limit: int = Query(1000, ge=1, le=5000)) -> Re
     `key_invalid: true` and we'll stop the batch early so we don't
     burn credit on a dead key.
     """
-    if not is_distiller_configured():
-        raise HTTPException(503, "distiller is not configured (set the API key in Settings)")
+    # v0.2a+: check the *active* provider (DeepSeek or MiniMax). The
+    # legacy v0.1 `is_distiller_configured()` helper only checks
+    # DEEPSEEK_API_KEY, which would falsely reject MiniMax users.
+    active_provider = settings.load_active_provider()["provider"]
+    if not settings.is_provider_configured(active_provider):
+        raise HTTPException(
+            503,
+            f"distiller is not configured (set the API key in Settings for {active_provider})",
+        )
     result = await redistill_all_pending(batch_limit=batch_limit)
     return RedistillResponse(
         started_pending=result.started_pending,

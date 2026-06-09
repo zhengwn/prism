@@ -100,7 +100,7 @@ export interface SyncJob {
  * updating both the Python registry (`python/prism_sidecar/distillers/`) and
  * the i18n hint strings in `src/i18n/{en,zh}.json`.
  */
-export type ProviderId = "deepseek" | "openai" | "anthropic" | "ollama" | "custom";
+export type ProviderId = "deepseek" | "minimax";
 
 /**
  * A single configurable field on a provider's settings form. The `name` is
