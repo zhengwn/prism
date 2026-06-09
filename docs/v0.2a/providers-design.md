@@ -12,8 +12,14 @@
 
 | ID | Label | Key | Default model | Env var(s) |
 |---|---|---|---|---|
-| `deepseek` | DeepSeek | required | `deepseek/deepseek-v4-pro` | `DEEPSEEK_API_KEY` |
-| `minimax`  | MiniMax  | required | `openai/MiniMax-M3`         | `MINIMAX_API_KEY` + `MINIMAX_API_BASE` |
+| `deepseek` | DeepSeek | required | `deepseek-v4-pro` | `DEEPSEEK_API_KEY` |
+| `minimax`  | MiniMax  | required | `MiniMax-M3`      | `MINIMAX_API_KEY` + `MINIMAX_API_BASE` |
+
+> **Model id 命名约定**：`defaultModel` 跟用户填到 Settings 里的
+> override 都是**用户友好的产品名**（`deepseek-v4-pro` / `MiniMax-M3`），
+> 不带 litellm 路由前缀。`MiniMaxDistiller.__init__` 跟
+> `DeepSeekDistiller.__init__` 会在内部自动加 `openai/` / `deepseek/`
+> 前缀再传给 litellm——用户不接触这些 implementation detail。
 
 **2 个预设，无自定义**。MiniMax 用 OpenAI-compatible 协议，默认 endpoint
 `https://api.minimaxi.com/v1`（用户可在 Settings 高级设置里覆盖 base_url

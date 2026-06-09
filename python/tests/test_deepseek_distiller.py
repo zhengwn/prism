@@ -93,9 +93,18 @@ def test_parse_response_rejects_garbage():
 
 
 def test_deepseek_default_model_string():
-    """The litellm model string must use the deepseek/ prefix and the
-    pinned deepseek-v4-pro model id."""
+    """The user-facing default is "deepseek-v4-pro" — the distiller
+    prepends the litellm "deepseek/" routing prefix internally."""
     d = DeepSeekDistiller(api_key="sk-test", max_retries=0)
+    assert d.default_model == "deepseek-v4-pro"
+    assert d._model == "deepseek/deepseek-v4-pro"
+
+
+def test_deepseek_strips_redundant_litellm_prefix():
+    """If a caller passes a model with the litellm prefix already
+    (e.g. an override from a stale config), the distiller must not
+    double-prefix it."""
+    d = DeepSeekDistiller(api_key="sk-test", model="deepseek/deepseek-v4-pro", max_retries=0)
     assert d._model == "deepseek/deepseek-v4-pro"
 
 
@@ -141,6 +150,29 @@ async def test_distiller_calls_litellm_and_parses(monkeypatch):
     assert captured["kwargs"]["model"] == "deepseek/deepseek-v4-pro"
     assert captured["kwargs"]["api_key"] == "sk-test"
     assert captured["kwargs"]["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
+async def test_distiller_accepts_bare_user_facing_model_id(monkeypatch):
+    """The Settings UI / active_provider.json can hand the distiller
+    a bare model id ("deepseek-v4-pro") and the distiller must
+    transparently add the litellm routing prefix before calling."""
+    captured: dict[str, Any] = {}
+
+    async def fake_acompletion(*args: Any, **kwargs: Any):
+        captured["kwargs"] = kwargs
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(SAMPLE_GOOD)}}
+            ]
+        }
+
+    fake_litellm = type("L", (), {"acompletion": staticmethod(fake_acompletion)})
+    monkeypatch.setitem(__import__("sys").modules, "litellm", fake_litellm)
+
+    d = DeepSeekDistiller(api_key="sk-test", model="deepseek-v4-pro", max_retries=0)
+    await d.distill(SAMPLE_RAW)
+    assert captured["kwargs"]["model"] == "deepseek/deepseek-v4-pro"
 
 
 # ---- key-invalid detection (moved to base) ------------------------------

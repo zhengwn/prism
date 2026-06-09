@@ -44,11 +44,20 @@ SAMPLE_GOOD = {
 # ---- class wiring + default values ---------------------------------------
 
 
-def test_minimax_default_model_is_openai_prefixed():
+def test_minimax_default_model_is_user_facing():
     d = MiniMaxDistiller(api_key="sk-test", max_retries=0)
-    # The litellm model string uses the openai/ prefix so the request
-    # routes through the OpenAI-compatible adapter.
+    # `default_model` carries the user-facing id (no litellm prefix).
+    assert d.default_model == "MiniMax-M3"
+    # The internal `._model` is the litellm-prefixed routing string.
     assert d._model == "openai/MiniMax-M3"
+
+
+def test_minimax_strips_redundant_litellm_prefix():
+    """If a caller passes a model with the openai/ prefix already
+    (e.g. an override from a stale config), the distiller must not
+    double-prefix it."""
+    d = MiniMaxDistiller(api_key="sk-test", model="openai/M3-highspeed", max_retries=0)
+    assert d._model == "openai/M3-highspeed"
 
 
 def test_minimax_default_base_url():
@@ -70,11 +79,6 @@ def test_minimax_reads_base_url_from_env(monkeypatch):
 def test_minimax_wraps_bare_model_name_in_openai_prefix():
     d = MiniMaxDistiller(api_key="sk-test", model="M3-highspeed")
     assert d._model == "openai/M3-highspeed"
-
-
-def test_minimax_preserves_already_prefixed_model():
-    d = MiniMaxDistiller(api_key="sk-test", model="openai/zz")
-    assert d._model == "openai/zz"
 
 
 def test_minimax_reads_key_from_env(monkeypatch):
@@ -120,6 +124,29 @@ async def test_minimax_calls_litellm_with_openai_prefix_and_api_base(monkeypatch
     assert captured["kwargs"]["api_key"] == "sk-test"
     assert captured["kwargs"]["api_base"] == "https://api.minimaxi.com/v1"
     assert captured["kwargs"]["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
+async def test_minimax_accepts_bare_user_facing_model_id(monkeypatch):
+    """The Settings UI / active_provider.json can hand the distiller
+    a bare model id ("M3") and the distiller must transparently add
+    the litellm routing prefix before calling."""
+    captured: dict[str, Any] = {}
+
+    async def fake_acompletion(*args: Any, **kwargs: Any):
+        captured["kwargs"] = kwargs
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(SAMPLE_GOOD)}}
+            ]
+        }
+
+    fake_litellm = type("L", (), {"acompletion": staticmethod(fake_acompletion)})
+    monkeypatch.setitem(__import__("sys").modules, "litellm", fake_litellm)
+
+    d = MiniMaxDistiller(api_key="sk-test", model="MiniMax-M3", max_retries=0)
+    await d.distill(SAMPLE_RAW)
+    assert captured["kwargs"]["model"] == "openai/MiniMax-M3"
 
 
 @pytest.mark.asyncio

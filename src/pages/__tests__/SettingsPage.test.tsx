@@ -46,9 +46,9 @@ vi.mock("@/lib/api", () => ({
   },
 }));
 
-// v0.2a+: only 2 providers, both key-required. Schema fields are the
-// minimum needed for the form (apiKey); everything else (model, baseUrl)
-// lives behind the "Advanced" disclosure and is typed in directly.
+// v0.2a+: only 2 providers, both key-required. `defaultModel` carries
+// the USER-FACING model id (no litellm routing prefix) — the distiller
+// prepends the prefix internally.
 const FAKE_SCHEMAS: ProviderSchema[] = [
   {
     id: "deepseek",
@@ -119,7 +119,7 @@ describe("SettingsPage — Provider switcher (AiSection)", () => {
     vi.mocked(api.api.getPendingDistillCount).mockResolvedValue({ pending: 0 });
   });
 
-  it("initial render with deepseek shows the API key input and the advanced model disclosure", async () => {
+  it("initial render with deepseek shows the API key input and the inline model field", async () => {
     renderWithQuery(<SettingsPage />);
     await waitForSchemasLoaded();
 
@@ -129,16 +129,21 @@ describe("SettingsPage — Provider switcher (AiSection)", () => {
     // API key is present
     expect(screen.getByTestId("provider-api-key")).toBeInTheDocument();
 
-    // v0.2a+: no separate ollama / base-url / no-key-hint blocks
+    // Model field is inline (no "Advanced" disclosure in v0.2a+).
+    const model = screen.getByTestId("provider-model");
+    expect(model).toBeInTheDocument();
+    // The placeholder should carry the user-facing model id (no
+    // litellm routing prefix leaking into the UI).
+    expect(model).toHaveAttribute("placeholder", "deepseek-v4-pro");
+
+    // v0.2a+: no ollama / base-url / no-key-hint / advanced-disclosure
     expect(screen.queryByTestId("provider-ollama-host")).not.toBeInTheDocument();
     expect(screen.queryByTestId("provider-base-url")).not.toBeInTheDocument();
     expect(screen.queryByTestId("provider-no-key-hint")).not.toBeInTheDocument();
-
-    // Model field lives behind the advanced disclosure
-    expect(screen.getByTestId("provider-advanced")).toBeInTheDocument();
+    expect(screen.queryByTestId("provider-advanced")).not.toBeInTheDocument();
   });
 
-  it("switching to minimax keeps the API key field and the advanced disclosure visible", async () => {
+  it("switching to minimax updates the model placeholder to 'M3' (user-facing id)", async () => {
     renderWithQuery(<SettingsPage />);
     await waitForSchemasLoaded();
 
@@ -147,14 +152,15 @@ describe("SettingsPage — Provider switcher (AiSection)", () => {
 
     // Both providers need a key, so the api-key field stays.
     expect(screen.getByTestId("provider-api-key")).toBeInTheDocument();
-    // Advanced disclosure stays too.
-    expect(screen.getByTestId("provider-advanced")).toBeInTheDocument();
-    // No ollama host / no base-url ever appear.
-    expect(screen.queryByTestId("provider-ollama-host")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("provider-base-url")).not.toBeInTheDocument();
+
+    // Model field stays inline. Placeholder switches to the user-facing
+    // MiniMax id "MiniMax-M3" — the litellm "openai/" prefix must NOT
+    // leak into the UI placeholder.
+    const model = screen.getByTestId("provider-model");
+    expect(model).toHaveAttribute("placeholder", "MiniMax-M3");
   });
 
-  it("switching back to deepseek after minimax keeps the API key input", async () => {
+  it("switching back to deepseek restores the 'deepseek-v4-pro' placeholder", async () => {
     renderWithQuery(<SettingsPage />);
     await waitForSchemasLoaded();
 
@@ -162,8 +168,8 @@ describe("SettingsPage — Provider switcher (AiSection)", () => {
     fireEvent.change(select, { target: { value: "minimax" } });
     fireEvent.change(select, { target: { value: "deepseek" } });
 
-    expect(screen.getByTestId("provider-api-key")).toBeInTheDocument();
-    expect(screen.getByTestId("provider-advanced")).toBeInTheDocument();
+    const model = screen.getByTestId("provider-model");
+    expect(model).toHaveAttribute("placeholder", "deepseek-v4-pro");
   });
 
   it("clicking save calls api.setLlmConfig with provider and the typed apiKey", async () => {

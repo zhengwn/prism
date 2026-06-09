@@ -18,7 +18,6 @@ import {
   Languages,
   Sparkles,
   RefreshCw,
-  ChevronDown,
   Loader2,
   Check,
   AlertCircle,
@@ -302,9 +301,10 @@ function AiSection() {
   const requiresKey = activeSchema?.requiresKey ?? true;
 
   // Field visibility per provider. v0.2a+: only 2 providers, both
-  // key-required and both show the model behind the "Advanced" disclosure.
+  // key-required. The model field is inline (no "Advanced" disclosure)
+  // because both providers are the same shape — a disclosure adds no
+  // value when there's nothing to hide.
   const showApiKey = requiresKey;
-  const showAdvancedModel = true;
 
   const apiKeyPlaceholderKey = (() => {
     switch (activeProvider) {
@@ -478,33 +478,27 @@ function AiSection() {
           </div>
         )}
 
-        {showAdvancedModel && (
-          <details
-            className="rounded-md border border-input bg-background/50 p-3"
-            data-testid="provider-advanced"
-          >
-            <summary className="flex cursor-pointer items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground">
-              <ChevronDown className="h-3.5 w-3.5" />
-              {t("settings.provider.advanced")}
-            </summary>
-            <div className="mt-3 space-y-1.5">
-              <label htmlFor="provider-model" className="text-sm font-medium">
-                {t("settings.provider.model")}
-              </label>
-              <Input
-                id="provider-model"
-                data-testid="provider-model"
-                type="text"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder={activeSchema?.defaultModel ?? ""}
-                disabled={saveMut.isPending}
-                autoComplete="off"
-                spellCheck={false}
-              />
-            </div>
-          </details>
-        )}
+        {/* Model — inline for both providers (v0.2a+ has no "advanced"
+            disclosure; both providers are the same shape). The
+            `defaultModel` from the schema is the user-facing id
+            (e.g. "M3" or "deepseek-v4-pro") — the distiller prepends
+            the litellm routing prefix internally. */}
+        <div className="space-y-1.5">
+          <label htmlFor="provider-model" className="text-sm font-medium">
+            {t("settings.provider.model")}
+          </label>
+          <Input
+            id="provider-model"
+            data-testid="provider-model"
+            type="text"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            placeholder={activeSchema?.defaultModel ?? ""}
+            disabled={saveMut.isPending}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
 
         {/* Save button */}
         <div className="flex items-center gap-2">

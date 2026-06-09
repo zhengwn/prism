@@ -65,7 +65,8 @@ async def test_get_providers_shape_for_deepseek(client):
     deepseek = next(s for s in r.json() if s["id"] == "deepseek")
     assert deepseek["label"] == "DeepSeek"
     assert deepseek["requiresKey"] is True
-    assert deepseek["defaultModel"] == "deepseek/deepseek-v4-pro"
+    # defaultModel is the user-facing id (no litellm prefix leaking).
+    assert deepseek["defaultModel"] == "deepseek-v4-pro"
     assert len(deepseek["fields"]) == 1
     assert deepseek["fields"][0]["name"] == "api_key"
     assert deepseek["fields"][0]["required"] is True
@@ -76,7 +77,8 @@ async def test_get_providers_shape_for_minimax(client):
     r = await client.get("/api/settings/providers")
     mm = next(s for s in r.json() if s["id"] == "minimax")
     assert mm["requiresKey"] is True
-    assert mm["defaultModel"] == "openai/MiniMax-M3"
+    # defaultModel is the user-facing id (no "openai/" litellm prefix).
+    assert mm["defaultModel"] == "MiniMax-M3"
     assert len(mm["fields"]) == 1
     assert mm["fields"][0]["name"] == "api_key"
     assert mm["fields"][0]["required"] is True

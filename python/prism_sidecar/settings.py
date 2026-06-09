@@ -118,7 +118,7 @@ PROVIDER_SCHEMAS: list[ProviderSchema] = [
         label="DeepSeek",
         hint="中文最强，便宜",
         requires_key=True,
-        default_model="deepseek/deepseek-v4-pro",
+        default_model="deepseek-v4-pro",  # user-facing id; litellm prefix added inside the distiller
         fields=[
             ProviderField(
                 name="api_key", label="apiKey", required=True,
@@ -131,7 +131,7 @@ PROVIDER_SCHEMAS: list[ProviderSchema] = [
         label="MiniMax",
         hint="M3，百万上下文，OpenAI 兼容",
         requires_key=True,
-        default_model="openai/MiniMax-M3",
+        default_model="MiniMax-M3",  # user-facing id; litellm "openai/" prefix added inside the distiller
         fields=[
             ProviderField(
                 name="api_key", label="apiKey", required=True,

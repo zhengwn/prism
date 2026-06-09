@@ -162,8 +162,14 @@ python/prism_sidecar/
 
 | Provider id | Default model           | Env key var          | Default base URL                  |
 |-------------|-------------------------|----------------------|-----------------------------------|
-| `deepseek`  | `deepseek/deepseek-v4-pro` | `DEEPSEEK_API_KEY`   | (canonical, no override)          |
-| `minimax`   | `openai/MiniMax-M3`        | `MINIMAX_API_KEY`    | `https://api.minimaxi.com/v1`     |
+| `deepseek`  | `deepseek-v4-pro`       | `DEEPSEEK_API_KEY`   | (canonical, no override)          |
+| `minimax`   | `MiniMax-M3`            | `MINIMAX_API_KEY`    | `https://api.minimaxi.com/v1`     |
+
+> **Model id 命名约定**：`defaultModel` 跟用户填的 override 都是**用户友好的
+> 产品名**（不带 `deepseek/` 或 `openai/` 这种 litellm 路由前缀）。各 distiller
+> 的 `__init__` 会在内部自动加前缀再传给 litellm——用户不接触 implementation
+> detail。如果用户 override 时把前缀也写上（比如从老的 v0.2a 配置文件
+> 复制过来），`removeprefix(...)` 会先剥掉再重加，不会双前缀。
 
 **Adding a new provider** (3 mandatory steps + tests):
 1. `distillers/<name>.py` — subclass `LitellmDistiller`; set

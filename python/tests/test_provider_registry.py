@@ -37,15 +37,18 @@ def test_registry_has_2_providers():
 def test_get_distiller_deepseek_default():
     d = get_distiller("deepseek")
     assert isinstance(d, DeepSeekDistiller)
-    # Model string should still carry the deepseek/ prefix.
+    # `default_model` is the user-facing id; the distiller prepends the
+    # litellm "deepseek/" routing prefix in `__init__`.
+    assert d.default_model == "deepseek-v4-pro"
     assert d._model == "deepseek/deepseek-v4-pro"
 
 
 def test_get_distiller_minimax_default():
     d = get_distiller("minimax")
     assert isinstance(d, MiniMaxDistiller)
-    # MiniMax wraps its model in the openai/ prefix so litellm routes
-    # through the OpenAI-compatible adapter.
+    # `default_model` is the user-facing id; the distiller prepends the
+    # litellm "openai/" routing prefix in `__init__`.
+    assert d.default_model == "MiniMax-M3"
     assert d._model == "openai/MiniMax-M3"
     # Base URL defaults to the public MiniMax endpoint.
     assert d._api_base == "https://api.minimaxi.com/v1"
@@ -61,8 +64,10 @@ def test_get_distiller_minimax_with_explicit_base_url():
     assert d._api_base == "https://mirror.example/v1"
 
 
-def test_get_distiller_minimax_preserves_already_prefixed_model():
+def test_get_distiller_minimax_strips_redundant_litellm_prefix():
     d = get_distiller("minimax", model="openai/M3-elsewhere")
+    # Stale configs might hand us a model with the openai/ prefix
+    # already; the distiller must not double-prefix.
     assert d._model == "openai/M3-elsewhere"
 
 
