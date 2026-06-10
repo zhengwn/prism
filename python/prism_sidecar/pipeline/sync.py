@@ -34,6 +34,7 @@ from prism_sidecar.distillers.registry import get_distiller
 from prism_sidecar.fetchers import registry
 from prism_sidecar.fetchers.base import RawItem
 from prism_sidecar.models import Source
+from prism_sidecar.progress import progress_store
 from prism_sidecar.settings import (
     is_provider_configured,
     load_active_provider,
@@ -160,10 +161,20 @@ async def run_source_sync(source: Source, distiller: Distiller | None = None) ->
             stats.new_items += 1
 
             if distiller is not None:
+                # Per-item progress signal so the inbox progress bar
+                # can show "正在蒸馏: <title>". This is the only
+                # place in the sync pipeline that touches the
+                # progress store — orchestrators in app.py are
+                # responsible for the begin_run / end_run framing.
+                await progress_store.item_started(
+                    title=raw.title,
+                    source=source.name,
+                )
                 try:
                     distilled: DistilledItem = await distiller.distill(raw)
                     await update_item_distilled(item_id, distilled)
                     stats.distilled += 1
+                    await progress_store.item_succeeded()
                 except DistillerNotConfigured:
                     # No key — stop trying for the rest of this run.
                     distiller = None
@@ -181,6 +192,7 @@ async def run_source_sync(source: Source, distiller: Distiller | None = None) ->
                     break
                 except Exception as exc:  # noqa: BLE001
                     stats.failed_distill += 1
+                    await progress_store.item_failed()
                     log.warning(
                         "[sync] distill failed for %s: %s", raw.url, exc,
                     )

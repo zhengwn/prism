@@ -27,6 +27,7 @@ from prism_sidecar.distillers.base import (
 )
 from prism_sidecar.distillers.registry import get_distiller
 from prism_sidecar.fetchers.base import RawItem
+from prism_sidecar.progress import progress_store
 from prism_sidecar.store import (
     get_item,
     get_source,
@@ -131,31 +132,45 @@ async def redistill_all_pending(
             content_type=item.content_type,
         )
 
+        # Per-item progress signal for the inbox progress bar.
+        # The source name is best-effort: a redistill doesn't iterate
+        # by source, so we look it up per-item.
+        item_source = await get_source(item.source_id) if item.source_id else None
+        await progress_store.item_started(
+            title=item.title_en,
+            source=item_source.name if item_source else None,
+        )
+
         try:
             distilled: DistilledItem = await distiller.distill(raw)
         except DistillerNotConfigured:
             result.error = "distiller_not_configured"
+            await progress_store.item_failed()
             return result
         except DistillerKeyInvalid as exc:
             result.key_invalid = True
             result.error = f"key_invalid: {exc}"
             log.error("[redistill] API key invalid, aborting batch: %s", exc)
+            await progress_store.item_failed()
             return result
         except Exception as exc:  # noqa: BLE001
             result.failed += 1
             if len(result.sample_failures) < 5:
                 result.sample_failures.append(f"{item.url}: {exc!r}")
             log.warning("[redistill] failed for %s: %s", item.url, exc)
+            await progress_store.item_failed()
             continue
 
         try:
             await update_item_distilled(item.id, distilled)
             result.distilled += 1
+            await progress_store.item_succeeded()
         except Exception as exc:  # noqa: BLE001
             result.failed += 1
             log.warning("[redistill] DB write failed for %s: %s", item.id, exc)
             if len(result.sample_failures) < 5:
                 result.sample_failures.append(f"{item.id}: {exc!r}")
+            await progress_store.item_failed()
 
     return result
 
