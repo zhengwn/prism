@@ -117,14 +117,14 @@ best-practice, so they live here rather than in agent memory.
 - **v0.2a 测试覆盖**（已实现）：
   - **Python sidecar**：`cd python && uv run pytest -v` — 38 case（rss 5 / hn 3 / distiller 8 / store 8 / sync 5 / api 9）
   - **React 组件**：`cd src && npx vitest run` — 7 case（Button / InboxPage Sync 按钮 / SourcesPage Add Source dialog）
-  - **Rust keychain**：`cd src-tauri && cargo test --test keychain_smoke` — 2 真集成测试（macOS Keychain roundtrip）
+  - **Rust keystore**：`cd src-tauri && cargo test --test keystore_smoke` — 8 case（roundtrip / 0600 perms / 损坏容错 / 并发 / key_last4 / active-provider 校验 / 迁移幂等 / 真 macOS Keychain migration roundtrip）
   - **端到端**：`npm run smoke` — 启动 sidecar → 同步 → 验 items
 - **手动验证 v0.2a**：
   1. `npm run tauri:dev` 启动 Tauri 窗口
   2. Sidebar 显示 5 个种子源（HN + Simon + OpenAI + DeepMind + HF）
   3. 顶栏点「立即同步」按钮，触发 sync，验证 items 列表刷新
   4. SourcesPage 点 `+` 弹窗加一个新 RSS 源，验证列表更新
-  5. SettingsPage 配置 DeepSeek API key（存 OS keychain），重启 app 后状态显示「已配置」
+  5. SettingsPage 配置 DeepSeek API key（写入 `~/.prism/keystore.json` 加密存储），重启 app 后状态显示「已配置」
 - **v0.2b 起加：** Playwright for Tauri E2E（开 Tauri 窗口跑真实交互）
 
 ## PR & commit conventions
@@ -140,8 +140,25 @@ best-practice, so they live here rather than in agent memory.
 - **Python sidecar listens on `127.0.0.1:8765` only** — never bind to `0.0.0.0` in dev
 - **CORS allowlist** in `python/prism_sidecar/app.py` is restricted to Tauri + Vite origins
 - **Tauri capabilities:** webview has minimal permissions by default; add new ones only when needed
-- **API keys (LLM providers, RSS, etc.)** go to **OS keychain** via `tauri-plugin-keyring` (v0.2a 已实现) — never in repo, never in sidecar config files
-- **Key exposure boundary:** 前端只能调 `getApiKeyStatus()` 拿到 `{configured: boolean}`，**永远拿不到 key 值**；key 仅在 Tauri 启动 sidecar 时通过 `cmd.env("DEEPSEEK_API_KEY", key)` 注入子进程环境变量
+- **API keys (LLM providers, RSS, etc.)** go to a **local encrypted-file
+  keystore** at `~/.prism/keystore.json` (master key at
+  `~/.prism/keystore.key`, 0600 on Unix). Encrypted with AES-256-GCM
+  (random nonce per write, base64-encoded `nonce || ciphertext` blob).
+  The previous OS-keychain layout (`tauri-plugin-keyring`) was removed
+  because it triggered an "Allow access to keychain" macOS prompt on
+  every launch; the new layout has no OS prompt after the first
+  migration run. See `src-tauri/src/keystore.rs` for the on-disk
+  format, encryption details, and migration logic.
+- **Key exposure boundary:** 前端只能调 `getApiKeyStatus()` /
+  `get_llm_config()` 拿到 `{configured: boolean}`，**永远拿不到 key
+  值**；key 仅在 Tauri 启动 sidecar 时通过
+  `cmd.env("DEEPSEEK_API_KEY", key)` 注入子进程环境变量
+- **One-shot keychain→keystore migration:** `keystore::migrate_from_keychain_if_needed`
+  is called once in `lib.rs` setup, **before** the sidecar is spawned.
+  Idempotent — once `~/.prism/keystore.json` exists, the migration is
+  a no-op. The first call on a v0.2a install triggers one macOS prompt
+  and then deletes the legacy keychain entries, so subsequent launches
+  are prompt-free.
 - **User data (sources, items) stays on disk locally** (`~/.prism/data.db`) — no telemetry in v0.2a
 
 ## LLM provider architecture (v0.2a+)
@@ -195,10 +212,11 @@ python/prism_sidecar/
   string is "invalid api key" to litellm).
 - **Distillers are read from env, never from disk.** Active
   provider id is in `~/.prism/active_provider.json`; the key is in
-  the OS keychain; Tauri injects it as env var when spawning the
-  sidecar. Sidecar never reads the keychain directly.
+  `~/.prism/keystore.json` (encrypted with AES-256-GCM under
+  `~/.prism/keystore.key`); Tauri injects it as env var when
+  spawning the sidecar. Sidecar never reads the keystore directly.
 - **POST `/api/settings/llm` hard-rejects any `apiKey` field**
-  (HTTP 400). Keys transit only through Tauri's keychain + env
+  (HTTP 400). Keys transit only through Tauri's keystore + env
   injection — never through sidecar HTTP. The
   `LlmConfigUpdate.api_key = Field(exclude=True)` + the route's
   explicit `if payload.api_key not in (None, "")` check are
@@ -221,7 +239,7 @@ The `POST /api/settings/llm` endpoint does a best-effort in-process
 hot-swap of a cached distiller reference, but the pipeline rebuilds
 the distiller per job from the on-disk file, and key env vars don't
 change without a process restart. The reliable flow is
-Tauri→keychain write→`sidecar::restart()` (kill + respawn with
+Tauri→keystore write→`sidecar::restart()` (kill + respawn with
 fresh env) — owned by `tauri-expert` (see commit `e460389`).
 
 **Tauri-side `KNOWN_PROVIDERS`** in `src-tauri/src/secrets.rs` must

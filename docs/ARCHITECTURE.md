@@ -12,7 +12,7 @@
 │  │  React + TS UI   │                        │            │  │
 │  │                  │   invoke()             │  - window  │  │
 │  │  - Sync 按钮     │                        │  - lifecycle│ │
-│  │  - Add Source    │                        │  - keyring  │  │
+│  │  - Add Source    │                        │  - keystore │  │
 │  │  - 双语显示      │                        │  - sidecar  │  │
 │  │  - Settings      │                        │    (spawn   │  │
 │  │                  │                        │     + env   │  │
@@ -175,7 +175,7 @@ interface KnowledgeItem {
 | 存储 | SQLite (aiosqlite) | 本地优先、零部署 |
 | 抓取 | httpx + feedparser | 异步、RSS 库成熟 |
 | 调度 | APScheduler | 进程内 cron，够用；不引入 arq 等重组件 |
-| 密钥 | OS keychain (keyring crate) | 不入 git、不明文 |
+| 密钥 | 本地加密文件 keystore（AES-256-GCM）| 不入 git、不明文，无 OS prompt |
 | 跨进程 | HTTP loopback | 简单、可调试 |
 | 双语存储 | 显式 `*_en` / `*_zh` 字段 | 保留搜索英文能力 + 切换语言可看原文 |
 
@@ -196,12 +196,13 @@ prism/
 ├── src-tauri/                # Tauri 2 Rust 端
 │   ├── src/
 │   │   ├── main.rs           # 入口
-│   │   ├── lib.rs            # Builder + keyring + RunEvent
+│   │   ├── lib.rs            # Builder + RunEvent + 启动期一次 keychain→keystore 迁移
 │   │   ├── sidecar.rs        # Python 进程管理 + env 注入
-│   │   └── secrets.rs        # OS keychain 封装（v0.2a 新增）
-│   ├── capabilities/         # 权限（含 keyring）
-│   ├── tests/keychain_smoke.rs  # 真 keychain 集成测试
-│   └── examples/dev_keychain_check.rs
+│   │   ├── secrets.rs        # 公开 IPC 命令 + 公开 helper 签名（薄封装，转发到 keystore）
+│   │   └── keystore.rs       # 本地 AES-256-GCM 加密文件存储 + 一次 keychain→keystore 迁移
+│   ├── capabilities/         # 权限（v0.2a+ 不再含 keyring）
+│   ├── tests/keystore_smoke.rs  # 8 case：roundtrip / 0600 / 损坏容错 / 并发 / key_last4 / 迁移幂等 / 真 Keychain migration
+│   └── tests/llm_config_smoke.rs # 9 case：纯 helper + IPC serde camelCase 契约
 ├── python/                   # Python sidecar
 │   ├── pyproject.toml
 │   ├── pytest.ini
@@ -292,9 +293,10 @@ CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT);  -- 迁移版本
 - **loopback only**：Python sidecar 只听 `127.0.0.1`，不暴露公网
 - **Tauri capabilities**：webview 默认不能调系统命令，必须显式 allow
 - **CSP**：dev 阶段关掉，prod 阶段收紧（v0.4）
-- **Secrets**：API key 存 OS keychain（v0.2a 已实现，**前端永远拿不到 key 值**，只能查 `{configured: bool}`）
+- **Secrets**：API key 存本地加密文件 `~/.prism/keystore.json`（v0.2a+ 替代 OS keychain，根除 macOS 启动期授权弹窗；**前端永远拿不到 key 值**，只能查 `{configured: bool}`）
 - **CORS allowlist**：Tauri + Vite origins only
-- **sidecar env 注入**：Tauri 启动时从 keychain 读 key → `cmd.env("DEEPSEEK_API_KEY", key)` 注入子进程；key 不会出现在 settings 配置文件里
+- **sidecar env 注入**：Tauri 启动时从 keystore 读 key → `cmd.env("DEEPSEEK_API_KEY", key)` 注入子进程；key 不会出现在 settings 配置文件里
+- **一次 keychain→keystore 迁移**：v0.2a+ 在 `lib.rs` setup 钩子里调 `keystore::migrate_from_keychain_if_needed` —— 如果是 v0.2a 升上来，第一次会触发一次 macOS 授权弹窗并把 keychain 里的 key 转写到 keystore；之后 `delete_credential` 清掉 keychain entry，**永久免弹窗**
 
 ## 性能预算
 
@@ -309,7 +311,8 @@ CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT);  -- 迁移版本
 | 层级 | 工具 | 覆盖 |
 |---|---|---|
 | Python fetcher/distiller/store/sync/api | pytest 38 case | rss 5 / hn 3 / distiller 8 / store 8 / sync 5 / api 9 |
-| Rust keychain | `cargo test --test keychain_smoke` | 2 case（真 macOS Keychain roundtrip） |
+| Rust keystore | `cargo test --test keystore_smoke` | 8 case（roundtrip+密文无明文 / 0600 / 损坏容错 / 并发写 / key_last4 / active-provider 校验 / 迁移幂等 / 真 macOS Keychain migration roundtrip） |
+| Rust 公开 helper + IPC serde | `cargo test --test llm_config_smoke` | 9 case（username 格式 / is_known_provider / default_model / CustomLlmConfig JSON 形状 / IPC camelCase） |
 | React 关键组件 | Vitest 7 case | Button / InboxPage Sync 按钮 / SourcesPage Add Source dialog |
 | 端到端 | `bash scripts/smoke.sh` | 启动 sidecar → sync → 验 items |
 

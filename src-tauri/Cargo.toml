@@ -16,13 +16,35 @@ tauri-build = { version = "2.0", features = [] }
 [dependencies]
 tauri = { version = "2.1", features = [] }
 tauri-plugin-shell = "2.0"
-tauri-plugin-keyring = "0.1"
+# Local encrypted-file keystore (replaces tauri-plugin-keyring — see
+# `src-tauri/src/keystore.rs`). Encrypted with AES-256-GCM; the master key
+# lives next to the data file in `~/.prism/keystore.key`. No OS prompt on
+# every launch.
+aes-gcm = "0.10"
+base64 = "0.22"
+rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "5"
+# `keyring` is only used for the one-shot legacy migration in
+# `keystore::migrate_from_keychain_if_needed`. After that single
+# read+delete cycle, the OS keychain is never touched again. Default
+# features are enabled because the migration genuinely needs the
+# platform credential store (Keychain Access / Credential Manager /
+# libsecret); without them `get_password` would always return an
+# error. The link surface is small in practice and the dependency only
+# lives for the lifetime of the migration.
+keyring = "3"
 
 [dev-dependencies]
+# Real-keychain roundtrips in the migration test use a unique per-run
+# service name so they don't pollute the user's `com.prism.desktop`
+# entry set. Same feature set as the dependency above so the build is
+# reproducible.
 keyring = "3"
+# Used by `tests/keystore_smoke.rs` to give each test an isolated
+# keystore root directory.
+tempfile = "3"
 
 [profile.release]
 panic = "abort"
