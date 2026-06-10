@@ -68,6 +68,11 @@ class SyncJobStatus(str, Enum):
     running = "running"
     done = "done"
     error = "error"
+    # v0.2b+: user pressed Cancel. The job row keeps the partial
+    # progress so a follow-up sync can pick up where this one
+    # stopped; the value is distinct from "error" because the
+    # user intentionally stopped it, not the pipeline itself.
+    cancelled = "cancelled"
 
 
 # ----- Source --------------------------------------------------------------

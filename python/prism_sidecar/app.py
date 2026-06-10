@@ -69,7 +69,38 @@ log = logging.getLogger("prism-sidecar")
 # scheduler (or another process).
 _sync_lock: asyncio.Lock = asyncio.Lock()
 _inflight_jobs: set[str] = set()
+# Job IDs the user has explicitly cancelled via
+# POST /api/sync/{job_id}/cancel. The pipeline checks this set
+# between sources; if it finds its own id here, it stops
+# processing further sources (the current source's fetch is
+# allowed to finish — the alternative is leaving a half-
+# populated `items` row, which is uglier than a partial run).
+#
+# We keep the id in the set for the lifetime of the job so a
+# second /cancel call doesn't re-trigger a "cancelled" toast;
+# cleanup happens in the same try/finally that drops the job
+# from `_inflight_jobs`.
+_cancelled_jobs: set[str] = set()
 _is_app_ready: bool = False
+
+
+def is_job_cancelled(job_id: str) -> bool:
+    """Cheap, lock-free check used by the pipeline between sources."""
+    return job_id in _cancelled_jobs
+
+
+def consume_job_cancelled(job_id: str) -> bool:
+    """Atomic check-and-clear — returns True exactly once per cancel.
+
+    Used by the route handler to decide whether to surface a
+    'cancelled' status in the SyncResult instead of 'done'. After
+    this call, the cancel flag is gone (so a second consume returns
+    False even though the user did cancel).
+    """
+    if job_id in _cancelled_jobs:
+        _cancelled_jobs.discard(job_id)
+        return True
+    return False
 
 # Cached reference to the most recently built distiller. The pipeline
 # builds a fresh distiller per job (so config changes between jobs are
@@ -113,8 +144,21 @@ async def _run_pipeline_for_sources(
         pending=0,
         started_at_iso=started_at.isoformat(),
     )
+    cancelled = False
     try:
         for sid in source_ids:
+            # v0.2b+: poll the cancel flag between sources. We
+            # deliberately don't try to interrupt an in-flight
+            # `run_source_sync` call — its per-item loop is doing
+            # real work (HTTP fetch + LLM call) and yanking the
+            # rug would leave half-written rows. Letting the
+            # current source finish, then bailing before the
+            # next one, is the right granularity: the user
+            # wanted to STOP, not abort a single HTTP request.
+            if is_job_cancelled(job_id):
+                log.info("[sync] job=%s cancelled by user; stopping", job_id)
+                cancelled = True
+                break
             source = await store.get_source(sid)
             if source is None:
                 log.warning("[sync] job=%s source %s not found, skipping", job_id, sid)
@@ -184,7 +228,21 @@ async def _run_pipeline_for_sources(
                     error=str(exc),
                 )
 
-        final_status = SyncJobStatus.error if first_error else SyncJobStatus.done
+        # A user-cancelled run is a third outcome, distinct from
+        # done / error. The frontend uses this to render "Sync
+        # cancelled — X sources processed" instead of the green
+        # "done" toast or the red "error" toast. We still write
+        # the partial progress to the sync_jobs table so the
+        # user can pick up where they left off next time.
+        if cancelled:
+            final_status = SyncJobStatus.cancelled
+        elif first_error:
+            final_status = SyncJobStatus.error
+        else:
+            final_status = SyncJobStatus.done
+        # Eat the cancel flag now so the route handler can also
+        # report cancelled=True (it consumes the same flag).
+        consume_job_cancelled(job_id)
         await store.finish_job(
             job_id,
             status=final_status,
@@ -219,8 +277,16 @@ async def _run_pipeline_for_sources(
 async def _start_sync(source_id: Optional[str] = None) -> SyncResult:
     """Common entry point for /api/sync and /api/sync/{id}.
 
-    Returns the final SyncResult. Raises HTTPException(409) if a sync is
-    already running.
+    v0.2a returned the final SyncResult synchronously — the
+    client blocked until every source was fetched + distilled.
+    v0.2b returns immediately with status=running, and the
+    pipeline runs as a background task. The client polls
+    /api/sync/{job_id} (or watches the SSE progress stream)
+    to learn when the job finishes, and POSTs
+    /api/sync/{job_id}/cancel to ask it to stop early.
+
+    Returns the in-flight SyncResult placeholder. Raises
+    HTTPException(409) if a sync is already running.
     """
     # Optimistic check (no lock). The inflight set survives the actual
     # pipeline run, so this is the only check that can detect "another
@@ -229,8 +295,8 @@ async def _start_sync(source_id: Optional[str] = None) -> SyncResult:
         raise HTTPException(409, "another sync is already running")
 
     # Lock just for the "create job + mark inflight" critical section.
-    # We release the lock before running the actual pipeline so other
-    # /api/sync requests can be served their 409 promptly.
+    # We release the lock before spawning the background task so
+    # other /api/sync requests can be served their 409 promptly.
     async with _sync_lock:
         if _has_inflight_job() or await store.is_any_job_running():
             raise HTTPException(409, "another sync is already running")
@@ -247,15 +313,80 @@ async def _start_sync(source_id: Optional[str] = None) -> SyncResult:
             job_id = await store.create_job(None)
 
         _inflight_jobs.add(job_id)
-
-    # Pipeline runs WITHOUT the lock. The inflight set is the gate.
-    try:
-        result = await _run_pipeline_for_sources(
-            source_ids, job_id, job_source_id=source_id,
+        started_at = datetime.now(timezone.utc)
+        # Background task: runs the pipeline, drops the inflight
+        # flag when finished. We DON'T await it here — the route
+        # returns immediately so the user can interact with the
+        # progress bar / cancel button.
+        # Errors are swallowed by the task itself (it logs them
+        # and the job row's error column gets the message), so we
+        # don't need an explicit error handler here.
+        _inflight_tasks[job_id] = asyncio.create_task(
+            _background_pipeline(
+                source_ids=source_ids,
+                job_id=job_id,
+                job_source_id=source_id,
+            )
         )
+
+    # Return the in-flight placeholder. The client uses jobId
+    # to poll /api/sync/{job_id} for the real result.
+    return SyncResult(
+        job_id=job_id,
+        source_id=source_id,
+        started_at=started_at,
+        finished_at=None,
+        status=SyncJobStatus.running,
+        items_new=0,
+        items_distilled=0,
+        sources_total=len(source_ids),
+        sources_done=0,
+        error=None,
+    )
+
+
+# Background tasks need a registry so a sidecar restart doesn't
+# leave dangling "zombie" tasks in the asyncio runtime (they'd
+# be GC'd eventually but it's tidier to track them by id).
+_inflight_tasks: dict[str, asyncio.Task] = {}
+
+
+async def _background_pipeline(
+    *,
+    source_ids: list[str],
+    job_id: str,
+    job_source_id: Optional[str],
+) -> None:
+    """The actual pipeline wrapper, run as a background task.
+
+    Always cleans up `_inflight_jobs` and `_inflight_tasks` so a
+    crash here doesn't leave the sidecar thinking it's busy
+    forever. The body just calls the existing pipeline and
+    discards its return value (the pipeline already writes the
+    result to the sync_jobs row).
+    """
+    try:
+        await _run_pipeline_for_sources(
+            source_ids, job_id, job_source_id=job_source_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # The pipeline catches its own per-source exceptions, so
+        # this branch only fires on truly unexpected errors (a
+        # DB write that raises, a programming bug, etc.). Mark
+        # the job as errored so the UI doesn't sit on "running"
+        # forever.
+        log.exception("[sync-bg] job=%s raised", job_id)
+        try:
+            await store.finish_job(
+                job_id,
+                status=SyncJobStatus.error,
+                error=f"pipeline crashed: {exc!r}",
+            )
+        except Exception:  # pragma: no cover
+            log.exception("[sync-bg] failed to mark job=%s as error", job_id)
     finally:
         _inflight_jobs.discard(job_id)
-    return result
+        _inflight_tasks.pop(job_id, None)
 
 
 async def run_all_sync_background() -> None:
@@ -487,6 +618,34 @@ async def get_sync_job(job_id: str) -> SyncResult:
     if not job:
         raise HTTPException(404, f"job {job_id} not found")
     return job
+
+
+# v0.2b+: cancel an in-flight sync. The endpoint is a POST (not
+# DELETE) because cancellation is an action that mutates
+# server-side state — the cancel flag stays set until the
+# pipeline consumes it, even though the response is immediate.
+# 404 if the job doesn't exist; 409 if it's already finished
+# (cancelling a "done" job is a no-op the user shouldn't see
+# as success — tell them why so they don't think the button
+# is broken).
+@app.post(
+    "/api/sync/{job_id}/cancel",
+    response_model_by_alias=True,
+)
+async def cancel_sync_job(job_id: str) -> dict:
+    if job_id not in _inflight_jobs:
+        # Either unknown or already done. Distinguish by hitting
+        # the store so the user gets a useful error.
+        job = await store.get_job(job_id)
+        if not job:
+            raise HTTPException(404, f"job {job_id} not found")
+        raise HTTPException(
+            409,
+            f"job {job_id} is already {job.status.value}; nothing to cancel",
+        )
+    _cancelled_jobs.add(job_id)
+    log.info("[sync-cancel] user cancelled job=%s", job_id)
+    return {"jobId": job_id, "cancelled": True}
 
 
 # ---- Distill -------------------------------------------------------------
