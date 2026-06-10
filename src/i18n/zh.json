@@ -56,6 +56,8 @@
     "syncSuccess": "同步完成",
     "syncError": "同步失败",
     "syncResult": "同步完成 —— 新增 {{new}} 条，提炼 {{distilled}} 条",
+    "syncResultCancelled": "已取消 —— 完成了 {{distilled}} / {{total}} 个源",
+    "syncCancel": "取消",
     "pendingDistill": "待提炼",
     "distillProgressIdle": "",
     "distillProgressRunning": "正在蒸馏 {{distilled}}/{{pending}}…",

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { X, ExternalLink, Sparkles } from "lucide-react";
+import { X, ExternalLink, Sparkles, Hash } from "lucide-react";
 import { usePrismStore } from "@/store";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatRelativeTime, cn } from "@/lib/utils";
 import { useLanguage } from "@/hooks/useLanguage";
+import { parseInline, splitParagraphs } from "@/lib/inline-markdown";
 import type { KnowledgeItem } from "@/types";
 
 type Lang = "zh" | "en";
@@ -145,42 +146,95 @@ export function DetailPanel() {
             </>
           ) : item ? (
             <>
-              {/* Summary */}
+              {/* Summary — rendered as 1+ paragraphs (the LLM
+                  sometimes breaks with blank lines) and with
+                  **bold** markers promoted to <strong> via the
+                  parseInline helper. */}
               {localized?.summary && (
                 <section>
                   <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     {t("detail.summary")}
                   </h3>
-                  <p className="text-sm leading-relaxed">{localized.summary}</p>
+                  <div className="space-y-2 text-sm leading-relaxed">
+                    {splitParagraphs(localized.summary).map((para, i) => (
+                      <p key={i}>
+                        {parseInline(para).map((node, j) =>
+                          node.kind === "strong" ? (
+                            <strong key={j} className="font-semibold text-foreground">
+                              {node.text}
+                            </strong>
+                          ) : (
+                            <span key={j} className="whitespace-pre-wrap">
+                              {node.text}
+                            </span>
+                          ),
+                        )}
+                      </p>
+                    ))}
+                  </div>
                 </section>
               )}
 
-              {/* Key points */}
+              {/* Key points — numbered so the reader can
+                  reference point #3 instead of "the thing about
+                  the kernel patch". The numbered chip replaces
+                  the small bullet we had pre-v0.2b; it's louder
+                  but the list was already structured, so a
+                  numbered chip doesn't compete for attention
+                  with anything else on the page. */}
               {localized && localized.keyPoints.length > 0 && (
                 <section>
                   <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     {t("detail.keyPoints")}
                   </h3>
-                  <ul className="space-y-1.5 text-sm">
+                  <ol className="space-y-2 text-sm">
                     {localized.keyPoints.map((p, i) => (
-                      <li key={i} className="flex gap-2">
-                        <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-primary" />
-                        <span>{p}</span>
+                      <li key={i} className="flex gap-2.5">
+                        <span
+                          aria-hidden
+                          className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold tabular-nums text-primary"
+                        >
+                          {i + 1}
+                        </span>
+                        <span className="leading-relaxed">
+                          {parseInline(p).map((node, j) =>
+                            node.kind === "strong" ? (
+                              <strong key={j} className="font-semibold text-foreground">
+                                {node.text}
+                              </strong>
+                            ) : (
+                              <span key={j} className="whitespace-pre-wrap">
+                                {node.text}
+                              </span>
+                            ),
+                          )}
+                        </span>
                       </li>
                     ))}
-                  </ul>
+                  </ol>
                 </section>
               )}
 
-              {/* Tags — always Chinese (tagsZh), per product invariant. */}
+              {/* Tags — hash-prefixed chips (the social-tag
+                  convention). Replaces the plain secondary Badge
+                  from v0.2a: the leading # makes them feel
+                  clickable / categorisable even though we don't
+                  yet have a tag-click → filter action. When we
+                  add that, the affordance will already be in
+                  place. */}
               {localized && localized.tags.length > 0 && (
                 <section>
                   <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                     {t("detail.tags")}
                   </h3>
-                  <div className="flex flex-wrap gap-1">
+                  <div className="flex flex-wrap gap-1.5">
                     {localized.tags.map((tag) => (
-                      <Badge key={tag} variant="secondary">
+                      <Badge
+                        key={tag}
+                        variant="secondary"
+                        className="gap-0.5 px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground"
+                      >
+                        <Hash className="h-2.5 w-2.5" />
                         {tag}
                       </Badge>
                     ))}

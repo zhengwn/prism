@@ -32,9 +32,30 @@ function displaySummary(item: KnowledgeItem, preferEn: boolean): string | undefi
 }
 
 export function InboxPage() {
+  // The search input is now backed by the sidecar's FTS5 index
+  // (see python/prism_sidecar/fts5.py). We pass the query down to
+  // the API rather than filtering client-side, so the inbox
+  // stays responsive even when there are thousands of items.
+  //
+  // Debounce: the input still updates the Zustand store on every
+  // keystroke (so the search box always reflects what the user
+  // typed), but we only fire the network query once the user has
+  // stopped typing for 200ms. Without this, fast typing creates
+  // a queue of in-flight requests that all resolve out of order
+  // and the list flickers. The 200ms is small enough to feel
+  // instant but long enough to coalesce most typing bursts.
+  const searchQuery = usePrismStore((s) => s.searchQuery);
+  const [debouncedQuery, setDebouncedQuery] = useState(searchQuery);
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setDebouncedQuery(searchQuery);
+    }, 200);
+    return () => window.clearTimeout(handle);
+  }, [searchQuery]);
+
   const { data: items, isLoading } = useQuery({
-    queryKey: ["items"],
-    queryFn: () => api.listItems(),
+    queryKey: ["items", { q: debouncedQuery }],
+    queryFn: () => api.listItems({ q: debouncedQuery || undefined }),
   });
 
   const { data: sources } = useQuery({
@@ -47,7 +68,6 @@ export function InboxPage() {
   const setSelectedSource = usePrismStore((s) => s.setSelectedSource);
   const selectedItemId = usePrismStore((s) => s.selectedItemId);
   const setSelectedItem = usePrismStore((s) => s.setSelectedItem);
-  const searchQuery = usePrismStore((s) => s.searchQuery);
   const statusFilter = usePrismStore((s) => s.statusFilter);
   const setStatusFilter = usePrismStore((s) => s.setStatusFilter);
   const { t, language } = useLanguage();
@@ -57,8 +77,12 @@ export function InboxPage() {
   // lock the button. After it finishes we briefly show "success" or
   // "error" so the user gets feedback, then fall back to idle after 2s.
   const [syncState, setSyncState] = useState<SyncUiState>("idle");
-  const [toast, setToast] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+  const [toast, setToast] = useState<{ kind: "success" | "error" | "info"; text: string } | null>(null);
   const resetTimer = useRef<number | null>(null);
+  // The job_id of the in-flight sync, captured when the POST
+  // /api/sync call returns. Needed by handleCancel to call
+  // POST /api/sync/{jobId}/cancel. Null when no sync is running.
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
   // Live distill progress — drives the progress bar under the inbox
   // header. We use this for both the determinate "X / Y" state
@@ -80,14 +104,57 @@ export function InboxPage() {
     setSyncState("running");
     setToast(null);
     try {
-      const result = await api.syncAll();
-      setSyncState("success");
-      setToast({
-        kind: "success",
-        text: t("inbox.syncResult", { new: result.itemsNew, distilled: result.itemsDistilled }),
-      });
+      // v0.2b: /api/sync returns immediately with status=running
+      // and the pipeline runs in the background. We poll
+      // /api/sync/{jobId} until it finishes (every 250ms) so the
+      // UI can flip to success/error/cancelled as soon as the
+      // job settles. Polling — not a one-shot await — is the
+      // right pattern here because the job can take anywhere
+      // from 1s (no sources, no items) to 30s+ (slow fetcher,
+      // many items, slow LLM).
+      const initial = await api.syncAll();
+      const jobId = initial.jobId;
+      setActiveJobId(jobId);
+
+      const POLL_MS = 250;
+      const POLL_TIMEOUT_MS = 5 * 60 * 1000; // 5 min — anything longer = bug
+      const deadline = Date.now() + POLL_TIMEOUT_MS;
+      let final = initial;
+      while (final.status === "running" && Date.now() < deadline) {
+        await new Promise<void>((r) => window.setTimeout(r, POLL_MS));
+        final = await api.getSyncStatus(jobId);
+      }
+
+      // Now flip the button state to match the final status.
+      // 'done' and 'cancelled' both count as "not an error" —
+      // the user cancelled deliberately, not because the
+      // pipeline broke.
+      if (final.status === "cancelled") {
+        setToast({
+          kind: "info",
+          text: t("inbox.syncResultCancelled", {
+            distilled: final.itemsDistilled,
+            total: final.sourcesTotal,
+          }),
+        });
+      } else if (final.status === "error") {
+        setSyncState("error");
+        setToast({ kind: "error", text: t("inbox.syncError") });
+        qc.invalidateQueries({ queryKey: ["items"] });
+        qc.invalidateQueries({ queryKey: ["sources"] });
+        return;
+      } else {
+        setToast({
+          kind: "success",
+          text: t("inbox.syncResult", {
+            new: final.itemsNew,
+            distilled: final.itemsDistilled,
+          }),
+        });
+      }
       qc.invalidateQueries({ queryKey: ["items"] });
       qc.invalidateQueries({ queryKey: ["sources"] });
+      setSyncState("success");
     } catch (e) {
       console.error("[prism] sync failed:", e);
       setSyncState("error");
@@ -99,28 +166,37 @@ export function InboxPage() {
       resetTimer.current = window.setTimeout(() => {
         setSyncState("idle");
         setToast(null);
+        setActiveJobId(null);
       }, 2_500);
     }
   };
 
+  // Fire-and-forget cancel: the sidecar sets a flag and the
+  // pipeline picks it up at the next source boundary. The
+  // /api/sync POST that started the run is still blocked on
+  // the network — it will return with status="cancelled" once
+  // the flag is observed. We don't try to "speed up" the
+  // cancel by closing the connection; the user just sees
+  // "Sync cancelled" once the in-flight source finishes.
+  const handleCancel = async () => {
+    if (!activeJobId) return;
+    try {
+      await api.cancelSync(activeJobId);
+    } catch (e) {
+      console.error("[prism] cancel failed:", e);
+    }
+  };
+
+  // Client-side filters: source / status. The text search is now
+  // server-side via FTS5 (see useQuery above); everything else
+  // stays here because it's cheap and changes immediately when
+  // the user toggles a filter, whereas a server roundtrip would
+  // flash a loading state for half a second.
   const filteredItems: KnowledgeItem[] = (items ?? []).filter((it) => {
     if (selectedSourceId && it.sourceId !== selectedSourceId) return false;
     if (statusFilter === "unread" && it.status !== "unread") return false;
     if (statusFilter === "starred" && it.status !== "starred") return false;
     if (statusFilter === "archived" && it.status !== "archived") return false;
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      const haystack = [
-        it.titleEn,
-        it.titleZh ?? "",
-        it.summaryEn ?? "",
-        it.summaryZh ?? "",
-        (it.tagsZh ?? []).join(" "),
-      ]
-        .join(" ")
-        .toLowerCase();
-      if (!haystack.includes(q)) return false;
-    }
     return true;
   });
 
@@ -187,14 +263,19 @@ export function InboxPage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <SyncButton state={syncState} onClick={handleSync} />
+            <SyncButton
+              state={syncState}
+              onClick={syncState === "running" ? handleCancel : handleSync}
+            />
             {toast && (
               <span
                 className={cn(
                   "inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px]",
                   toast.kind === "success"
                     ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"
-                    : "border-destructive/40 bg-destructive/10 text-destructive",
+                    : toast.kind === "info"
+                      ? "border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-300"
+                      : "border-destructive/40 bg-destructive/10 text-destructive",
                 )}
                 role="status"
                 aria-live="polite"
@@ -202,6 +283,8 @@ export function InboxPage() {
               >
                 {toast.kind === "success" ? (
                   <Check className="h-3 w-3" />
+                ) : toast.kind === "info" ? (
+                  <AlertCircle className="h-3 w-3" />
                 ) : (
                   <AlertCircle className="h-3 w-3" />
                 )}
@@ -243,28 +326,38 @@ export function InboxPage() {
 
 function SyncButton({ state, onClick }: { state: SyncUiState; onClick: () => void }) {
   const { t } = useLanguage();
-  const label =
-    state === "running"
-      ? t("inbox.syncing")
-      : state === "success"
-        ? t("inbox.syncSuccess")
-        : state === "error"
-          ? t("inbox.syncError")
-          : t("inbox.syncNow");
-  const Icon =
-    state === "running"
-      ? RefreshCw
-      : state === "success"
-        ? Check
-        : state === "error"
-          ? AlertCircle
-          : RefreshCw;
+  // v0.2b: when the sync is running, this same button acts as
+  // "Cancel" instead of being disabled. The parent wires the
+  // click to handleCancel in that case, so the user can stop
+  // a long-running sync without waiting for it to finish.
+  const isCancel = state === "running";
+  const label = isCancel
+    ? t("inbox.syncCancel")
+    : state === "success"
+      ? t("inbox.syncSuccess")
+      : state === "error"
+        ? t("inbox.syncError")
+        : t("inbox.syncNow");
+  const Icon = isCancel
+    ? AlertCircle
+    : state === "success"
+      ? Check
+      : state === "error"
+        ? AlertCircle
+        : RefreshCw;
   return (
     <Button
       size="sm"
-      variant={state === "error" ? "destructive" : state === "success" ? "secondary" : "default"}
+      variant={
+        isCancel
+          ? "outline"
+          : state === "error"
+            ? "destructive"
+            : state === "success"
+              ? "secondary"
+              : "default"
+      }
       onClick={onClick}
-      disabled={state === "running"}
       className="gap-1.5"
       data-testid="sync-now-button"
       data-sync-state={state}

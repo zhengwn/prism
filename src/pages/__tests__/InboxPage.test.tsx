@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { InboxPage } from "../InboxPage";
 import * as api from "@/lib/api";
@@ -15,6 +15,11 @@ vi.mock("@/lib/api", () => ({
     listItems: vi.fn(),
     listSources: vi.fn(),
     syncAll: vi.fn(),
+    // v0.2b: the page polls getSyncStatus to know when a fire-and-
+    // forget sync finishes. Default mock: returns a job that's
+    // already done, so the post-click poll loop exits after one tick.
+    getSyncStatus: vi.fn(),
+    cancelSync: vi.fn(),
     getDistillStatus: vi.fn(() =>
       Promise.resolve({
         isRunning: false,
@@ -87,12 +92,22 @@ describe("InboxPage — Sync now button", () => {
   });
 
   it("disables the button while syncAll() is in flight", async () => {
-    // A promise we control — never resolves during the assertion.
-    let resolveSync!: (v: SyncResult) => void;
-    const pending = new Promise<SyncResult>((res) => {
-      resolveSync = res;
-    });
-    vi.mocked(api.api.syncAll).mockReturnValue(pending);
+    // v0.2b: /api/sync returns immediately with status=running;
+    // the page polls getSyncStatus to know when the job settles.
+    // We mock the job as "still running" so the button stays in
+    // its running state for the duration of the test.
+    const runningJob: SyncResult = {
+      jobId: "job-1",
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      status: "running",
+      sourcesTotal: 0,
+      sourcesDone: 0,
+      itemsNew: 0,
+      itemsDistilled: 0,
+    };
+    vi.mocked(api.api.syncAll).mockResolvedValue(runningJob);
+    vi.mocked(api.api.getSyncStatus).mockResolvedValue(runningJob);
 
     renderWithQuery(<InboxPage />);
 
@@ -102,40 +117,47 @@ describe("InboxPage — Sync now button", () => {
     fireEvent.click(btn);
 
     await waitFor(() => {
-      expect(btn).toBeDisabled();
-    });
-    expect(btn).toHaveAttribute("data-sync-state", "running");
-
-    // Resolve so the test doesn't leak a hanging promise / pending timer.
-    await act(async () => {
-      resolveSync({
-        jobId: "job-1",
-        startedAt: new Date().toISOString(),
-        finishedAt: new Date().toISOString(),
-        itemsNew: 0,
-        itemsDistilled: 0,
-      });
-      await pending;
+      expect(btn).toHaveAttribute("data-sync-state", "running");
     });
   });
 
   it("re-enables the button after syncAll resolves successfully", async () => {
-    vi.mocked(api.api.syncAll).mockResolvedValue({
+    const runningJob: SyncResult = {
       jobId: "job-1",
       startedAt: new Date().toISOString(),
-      finishedAt: new Date().toISOString(),
-      itemsNew: 3,
-      itemsDistilled: 2,
+      finishedAt: null,
+      status: "running",
+      sourcesTotal: 0,
+      sourcesDone: 0,
+      itemsNew: 0,
+      itemsDistilled: 0,
+    };
+    vi.mocked(api.api.syncAll).mockResolvedValue(runningJob);
+    // First poll returns "running" (so we exercise the loop);
+    // every subsequent poll returns "done" with the final stats.
+    let pollCount = 0;
+    vi.mocked(api.api.getSyncStatus).mockImplementation(async () => {
+      pollCount += 1;
+      if (pollCount < 2) return runningJob;
+      return {
+        jobId: "job-1",
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        status: "done",
+        sourcesTotal: 1,
+        sourcesDone: 1,
+        itemsNew: 3,
+        itemsDistilled: 2,
+      };
     });
 
     renderWithQuery(<InboxPage />);
     const btn = await screen.findByTestId("sync-now-button");
     fireEvent.click(btn);
 
-    // The button briefly enters `success` state, then a 2.5s timer
-    // drops it back to `idle`. We just assert the post-success
-    // re-enable — using fake timers here would be more precise but
-    // adds a lot of boilerplate. We verify two states: success → idle.
+    // After the poll resolves, the button briefly enters `success`
+    // state, then a 2.5s timer drops it back to `idle`. We just
+    // assert the post-success re-enable.
     await waitFor(() => {
       expect(btn).toHaveAttribute("data-sync-state", "success");
     });

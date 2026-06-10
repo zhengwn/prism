@@ -23,7 +23,7 @@ import type {
   PrismHealth,
   ProviderSchema,
   Source,
-  SyncJob,
+  SyncLogEntry,
   SyncResult,
 } from "@/types";
 
@@ -104,10 +104,24 @@ export const api = {
   syncOne: (sourceId: string) =>
     request<SyncResult>(`/api/sync/${sourceId}`, { method: "POST" }),
   /** GET /api/sync/{jobId} — poll status of a sync job. */
-  getSyncStatus: (jobId: string) => request<SyncJob>(`/api/sync/${jobId}`),
+  getSyncStatus: (jobId: string) => request<SyncResult>(`/api/sync/${jobId}`),
+  /**
+   * POST /api/sync/{jobId}/cancel — ask the sidecar to stop a
+   * running sync at the next source boundary. The endpoint is
+   * best-effort: it sets a flag, the pipeline observes it
+   * between sources and bails. The original /api/sync POST
+   * that started the run will return with status="cancelled"
+   * once the flag is picked up. Returns 404 if the job id
+   * doesn't exist, 409 if the job has already finished.
+   */
+  cancelSync: (jobId: string) =>
+    request<{ jobId: string; cancelled: boolean }>(
+      `/api/sync/${jobId}/cancel`,
+      { method: "POST" },
+    ),
   /** GET /api/sync/history?limit=N — list recent sync runs. */
   getSyncHistory: (limit?: number) =>
-    request<SyncJob[]>(`/api/sync/history${limit ? `?limit=${limit}` : ""}`),
+    request<SyncLogEntry[]>(`/api/sync/history${limit ? `?limit=${limit}` : ""}`),
 
   // ----- Distill -----
   /**

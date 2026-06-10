@@ -64,32 +64,46 @@ export interface PrismHealth {
 }
 
 /**
- * Result of POST /api/sync. v0.2a runs synchronously, so the response only
- * lands after the whole pipeline finishes — `itemsNew` and
- * `itemsDistilled` give the user a useful summary in the toast.
+ * Result of POST /api/sync. v0.2b returns immediately with
+ * `status="running"` and the pipeline runs in the background —
+ * the inbox polls GET /api/sync/{jobId} until `status` flips to
+ * one of the terminal values (done / error / cancelled). The
+ * shape matches the sidecar's `SyncResult` Pydantic model and
+ * is also used as the type for the polled intermediate states.
  */
 export interface SyncResult {
   jobId: string;
+  sourceId?: string;
   startedAt: string;
-  finishedAt: string;
+  finishedAt?: string | null;
+  status: SyncJobStatus;
+  sourcesTotal: number;
+  sourcesDone: number;
   itemsNew: number;
   itemsDistilled: number;
+  error?: string | null;
 }
 
 /**
- * Status of an in-flight (or completed) sync job. Returned by
- * GET /api/sync/{jobId} and POST /api/sync/{sourceId}.
+ * Status of an in-flight (or completed) sync job. v0.2b added
+ * "cancelled" so the UI can distinguish a user-initiated stop
+ * from a pipeline error.
  */
-export type SyncJobStatus = "pending" | "running" | "done" | "error";
+export type SyncJobStatus = "pending" | "running" | "done" | "error" | "cancelled";
 
-export interface SyncJob {
-  id: string;
+/**
+ * One entry from GET /api/sync/history. v0.2b: shape mirrors the
+ * sidecar's `SyncLogEntry` model (one row per source, NOT per
+ * job). If we ever need a true per-job history view we'll add a
+ * separate endpoint rather than overloading this one.
+ */
+export interface SyncLogEntry {
+  id: number;
   sourceId?: string;
   startedAt: string;
   finishedAt?: string;
   itemsNew: number;
   itemsDistilled: number;
-  status: SyncJobStatus;
   error?: string;
 }
 
