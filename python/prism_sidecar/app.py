@@ -15,15 +15,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from prism_sidecar import __version__, scheduler, settings, store
+from prism_sidecar.progress import progress_store
 from prism_sidecar.config import (
     DAILY_SYNC_ENABLED,
     DAILY_SYNC_HOUR,
@@ -100,98 +103,117 @@ async def _run_pipeline_for_sources(
     first_error: Optional[str] = None
     started_at = datetime.now(timezone.utc)
 
-    for sid in source_ids:
-        source = await store.get_source(sid)
-        if source is None:
-            log.warning("[sync] job=%s source %s not found, skipping", job_id, sid)
-            continue
-        if not source.enabled:
-            log.info("[sync] job=%s source %s disabled, skipping", job_id, sid)
-            sources_done += 1
-            await store.update_job_progress(
-                job_id,
-                items_new=items_new,
-                items_distilled=items_distilled,
-                sources_done=sources_done,
-            )
-            await store.write_sync_log(
-                source_id=sid,
-                job_id=job_id,
-                started_at=datetime.now(timezone.utc).isoformat(),
-                finished_at=datetime.now(timezone.utc).isoformat(),
-                items_new=0,
-                items_distilled=0,
-                error="disabled",
-            )
-            continue
-
-        try:
-            log_src_started = datetime.now(timezone.utc).isoformat()
-            stats = await run_source_sync(source)
-            sources_done += 1
-            items_new += stats.new_items
-            items_distilled += stats.distilled
-            err = stats.error
-            if err and first_error is None:
-                first_error = f"{source.name}: {err}"
-            await store.update_job_progress(
-                job_id,
-                items_new=items_new,
-                items_distilled=items_distilled,
-                sources_done=sources_done,
-            )
-            await store.write_sync_log(
-                source_id=sid,
-                job_id=job_id,
-                started_at=log_src_started,
-                finished_at=datetime.now(timezone.utc).isoformat(),
-                items_new=stats.new_items,
-                items_distilled=stats.distilled,
-                error=err,
-            )
-        except Exception as exc:  # noqa: BLE001
-            sources_done += 1
-            log.exception("[sync] job=%s source %s raised", job_id, sid)
-            if first_error is None:
-                first_error = f"{source.name}: {exc!r}"
-            await store.update_job_progress(
-                job_id,
-                items_new=items_new,
-                items_distilled=items_distilled,
-                sources_done=sources_done,
-            )
-            await store.write_sync_log(
-                source_id=sid,
-                job_id=job_id,
-                started_at=datetime.now(timezone.utc).isoformat(),
-                finished_at=datetime.now(timezone.utc).isoformat(),
-                items_new=0,
-                items_distilled=0,
-                error=str(exc),
-            )
-
-    final_status = SyncJobStatus.error if first_error else SyncJobStatus.done
-    await store.finish_job(
-        job_id,
-        status=final_status,
-        items_new=items_new,
-        items_distilled=items_distilled,
-        sources_total=sources_total,
-        sources_done=sources_done,
-        error=first_error,
+    # v0.2a+: open the live progress channel so the inbox can show a
+    # "distilling N items" bar while the pipeline is grinding. We
+    # don't know the exact `pending` count up front (it depends on
+    # how many NEW items each source yields), so we open with 0 and
+    # let the UI treat the running state as "indeterminate" — once
+    # the run ends the totals tell the truth.
+    await progress_store.begin_run(
+        pending=0,
+        started_at_iso=started_at.isoformat(),
     )
-    return SyncResult(
-        job_id=job_id,
-        source_id=job_source_id,
-        started_at=started_at,
-        finished_at=datetime.now(timezone.utc),
-        status=final_status,
-        items_new=items_new,
-        items_distilled=items_distilled,
-        sources_total=sources_total,
-        sources_done=sources_done,
-        error=first_error,
-    )
+    try:
+        for sid in source_ids:
+            source = await store.get_source(sid)
+            if source is None:
+                log.warning("[sync] job=%s source %s not found, skipping", job_id, sid)
+                continue
+            if not source.enabled:
+                log.info("[sync] job=%s source %s disabled, skipping", job_id, sid)
+                sources_done += 1
+                await store.update_job_progress(
+                    job_id,
+                    items_new=items_new,
+                    items_distilled=items_distilled,
+                    sources_done=sources_done,
+                )
+                await store.write_sync_log(
+                    source_id=sid,
+                    job_id=job_id,
+                    started_at=datetime.now(timezone.utc).isoformat(),
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    items_new=0,
+                    items_distilled=0,
+                    error="disabled",
+                )
+                continue
+
+            try:
+                log_src_started = datetime.now(timezone.utc).isoformat()
+                stats = await run_source_sync(source)
+                sources_done += 1
+                items_new += stats.new_items
+                items_distilled += stats.distilled
+                err = stats.error
+                if err and first_error is None:
+                    first_error = f"{source.name}: {err}"
+                await store.update_job_progress(
+                    job_id,
+                    items_new=items_new,
+                    items_distilled=items_distilled,
+                    sources_done=sources_done,
+                )
+                await store.write_sync_log(
+                    source_id=sid,
+                    job_id=job_id,
+                    started_at=log_src_started,
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    items_new=stats.new_items,
+                    items_distilled=stats.distilled,
+                    error=err,
+                )
+            except Exception as exc:  # noqa: BLE001
+                sources_done += 1
+                log.exception("[sync] job=%s source %s raised", job_id, sid)
+                if first_error is None:
+                    first_error = f"{source.name}: {exc!r}"
+                await store.update_job_progress(
+                    job_id,
+                    items_new=items_new,
+                    items_distilled=items_distilled,
+                    sources_done=sources_done,
+                )
+                await store.write_sync_log(
+                    source_id=sid,
+                    job_id=job_id,
+                    started_at=datetime.now(timezone.utc).isoformat(),
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    items_new=0,
+                    items_distilled=0,
+                    error=str(exc),
+                )
+
+        final_status = SyncJobStatus.error if first_error else SyncJobStatus.done
+        await store.finish_job(
+            job_id,
+            status=final_status,
+            items_new=items_new,
+            items_distilled=items_distilled,
+            sources_total=sources_total,
+            sources_done=sources_done,
+            error=first_error,
+        )
+        return SyncResult(
+            job_id=job_id,
+            source_id=job_source_id,
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+            status=final_status,
+            items_new=items_new,
+            items_distilled=items_distilled,
+            sources_total=sources_total,
+            sources_done=sources_done,
+            error=first_error,
+        )
+    finally:
+        # Always close the live progress channel — happy path,
+        # key-invalid early bail, and exception. The UI relies on
+        # `is_running=false` to stop animating.
+        await progress_store.end_run(
+            finished_at_iso=datetime.now(timezone.utc).isoformat(),
+            error=first_error,
+        )
 
 
 async def _start_sync(source_id: Optional[str] = None) -> SyncResult:
@@ -485,6 +507,110 @@ async def pending_distill_count() -> dict:
     return {"pending": len(ids)}
 
 
+@app.get("/api/distill/status")
+async def distill_status() -> dict:
+    """One-shot snapshot of the current distill run.
+
+    Returns the same shape as the SSE stream's per-event payload, so
+    the frontend can use a single `DistillProgress` type for both
+    the initial poll and the live updates. When no run is in flight
+    the response is `{isRunning: false, ...}` — i.e. an "idle" state
+    the UI can render as a hidden progress bar.
+    """
+    return progress_store.snapshot()
+
+
+# How often the SSE handler emits a synthetic `keepalive` event when
+# the pipeline is quiet. 15s is well under typical reverse-proxy /
+# browser idle-connection timeouts and keeps the connection warm
+# without flooding the wire.
+_SSE_KEEPALIVE_SEC = 15.0
+# How long the SSE handler waits for a real event before giving up
+# and closing the stream. We don't actually want this to trip while
+# a run is in flight (the pipeline can be slow on a long batch), so
+# this is set high — 30 minutes — and the connection is closed
+# normally by the `end_run` push when the run finishes.
+_SSE_HARD_TIMEOUT_SEC = 30 * 60
+
+
+@app.get("/api/distill/status/stream")
+async def distill_status_stream():
+    """Server-Sent Events stream of distill progress.
+
+    The browser connects with a single ``EventSource`` and receives
+    one ``data: {...JSON...}`` event per progress push (throttled to
+    100ms by the store, so a 50-item batch over 30s yields ~300
+    events, not 5000). Between real events we emit an SSE comment
+    frame every 15s to keep the connection alive.
+
+    The stream ends when the current run ends (``isRunning=false``
+    is the last event); the EventSource auto-reconnects but the
+    client should check the flag and close the connection on its
+    end so it doesn't keep reconnecting forever.
+
+    Wire format
+    -----------
+    * Real updates: ``data: {"isRunning":true,"distilled":5,"pending":10,...}\\n\\n``
+    * Keepalive:    ``: keepalive\\n\\n`` (SSE comment; ignored by EventSource)
+    """
+    queue = progress_store.subscribe()
+    # Push the current snapshot immediately so a late-attaching
+    # consumer (e.g. user opens the inbox mid-run) sees live state
+    # without waiting for the next pipeline tick.
+    try:
+        initial = progress_store.snapshot()
+        queue.put_nowait(initial)
+    except Exception:  # pragma: no cover
+        pass
+
+    async def event_gen():
+        last_keepalive = time.monotonic()
+        try:
+            # Hard timeout safety: if a pipeline run hangs forever
+            # (e.g. distiller deadlock), close the connection so
+            # the browser sees a clean disconnect and can decide
+            # whether to reconnect.
+            deadline = time.monotonic() + _SSE_HARD_TIMEOUT_SEC
+            while True:
+                now = time.monotonic()
+                if now >= deadline:
+                    log.warning("[distill-status-sse] hard timeout; closing")
+                    break
+                if now - last_keepalive >= _SSE_KEEPALIVE_SEC:
+                    yield ": keepalive\n\n"
+                    last_keepalive = now
+                try:
+                    snap = await asyncio.wait_for(queue.get(), timeout=_SSE_KEEPALIVE_SEC)
+                except asyncio.TimeoutError:
+                    # Loop back; the keepalive check above will
+                    # emit a comment if needed.
+                    continue
+                import json as _json
+
+                yield f"data: {_json.dumps(snap, ensure_ascii=False)}\n\n"
+                # If the run is done, this is the final event —
+                # close the stream so the client doesn't sit on
+                # a quiet connection.
+                if not snap.get("isRunning", False):
+                    break
+        finally:
+            progress_store.unsubscribe(queue)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            # Disable nginx-style buffering: the browser should see
+            # events as soon as we yield them. Without this some
+            # proxies buffer the whole response until completion,
+            # which defeats the purpose of SSE.
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @app.post("/api/distill/redistill", response_model=RedistillResponse, response_model_by_alias=True)
 async def trigger_redistill(batch_limit: int = Query(1000, ge=1, le=5000)) -> RedistillResponse:
     """Re-run distillation on every item that still has `distilled_at IS NULL`.
@@ -508,7 +634,25 @@ async def trigger_redistill(batch_limit: int = Query(1000, ge=1, le=5000)) -> Re
             503,
             f"distiller is not configured (set the API key in Settings for {active_provider})",
         )
-    result = await redistill_all_pending(batch_limit=batch_limit)
+    # We know the `pending` count up-front for redistill: it's the
+    # number of items in the queue right now. Use that to drive a
+    # proper determinate progress bar (X / pending) in the UI.
+    from prism_sidecar.pipeline.distill import list_pending_distill_ids
+
+    pending_ids = await list_pending_distill_ids()
+    capped_pending = min(len(pending_ids), batch_limit)
+    await progress_store.begin_run(
+        pending=capped_pending,
+        started_at_iso=datetime.now(timezone.utc).isoformat(),
+    )
+    result = None
+    try:
+        result = await redistill_all_pending(batch_limit=batch_limit)
+    finally:
+        await progress_store.end_run(
+            finished_at_iso=datetime.now(timezone.utc).isoformat(),
+            error=result.error if result is not None else None,
+        )
     return RedistillResponse(
         started_pending=result.started_pending,
         distilled=result.distilled,
