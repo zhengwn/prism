@@ -16,6 +16,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  DistillProgress,
   KnowledgeItem,
   LlmConfig,
   LlmConfigUpdate,
@@ -132,6 +133,15 @@ export const api = {
       error?: string;
       sampleFailures: string[];
     }>("/api/distill/redistill", { method: "POST" }),
+  /**
+   * GET /api/distill/status — one-shot snapshot of the current distill
+   * run. Same shape as the SSE stream's per-event payload, so the
+   * frontend can use a single `DistillProgress` type for both the
+   * initial poll and the live updates. When no run is in flight the
+   * response is `{isRunning: false, ...}` — an "idle" state the UI
+   * can render as a hidden progress bar.
+   */
+  getDistillStatus: () => request<DistillProgress>("/api/distill/status"),
 
   // ----- LLM provider settings (v0.2a) -----
   /**
@@ -166,7 +176,7 @@ export const api = {
    *     anywhere (the keychain isn't accessible from the webview
    *     outside of Tauri). Good enough for UI iteration.
    */
-  setLlmConfig: (update: LlmConfigUpdate): Promise<LlmConfig> => {
+   setLlmConfig: (update: LlmConfigUpdate): Promise<LlmConfig> => {
     if (isTauri()) {
       return invoke<LlmConfig>("set_llm_config", { config: update });
     }
@@ -174,6 +184,43 @@ export const api = {
       method: "POST",
       body: JSON.stringify(update),
     });
+  },
+
+  // ----- Distill progress (SSE) ----------------------------------------
+  /**
+   * Subscribe to the distill progress stream. The browser's
+   * `EventSource` auto-reconnects on transient errors; we just need
+   * to forward each `data:` payload to the supplied callback.
+   *
+   * Returns a cleanup function that closes the underlying
+   * connection. Use this in a `useEffect`'s teardown so the stream
+   * is closed when the consuming component unmounts.
+   *
+   * The stream is sidecar-only — when we're running inside the
+   * Tauri webview and the sidecar isn't up yet (e.g. first launch)
+   * the EventSource will fail to connect; we swallow that and let
+   * the caller decide whether to surface a fallback message.
+   */
+  subscribeDistillProgress(
+    onProgress: (snap: DistillProgress) => void,
+  ): () => void {
+    const url = `${SIDECAR_BASE}/api/distill/status/stream`;
+    const es = new EventSource(url);
+    es.onmessage = (ev) => {
+      try {
+        const snap = JSON.parse(ev.data) as DistillProgress;
+        onProgress(snap);
+      } catch (err) {
+        console.error("[prism] malformed distill progress event:", err, ev.data);
+      }
+    };
+    es.onerror = () => {
+      // EventSource auto-reconnects. We don't need to do anything
+      // here; the next `onmessage` will resume. Logging once is
+      // enough to make a stuck stream debuggable.
+      console.warn("[prism] distill progress stream error; EventSource will retry");
+    };
+    return () => es.close();
   },
 };
 

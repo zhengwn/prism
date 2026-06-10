@@ -131,14 +131,53 @@ export interface ProviderSchema {
 /**
  * The currently active LLM configuration. Returned by GET /api/settings/llm
  * and `get_llm_config`. The API key is NEVER returned — the UI only knows
- * `configured: boolean`. Storing / clearing the key goes through the Tauri
- * keychain.
+ * `configured: boolean` plus the trailing 4 chars (`keyLast4`) and the
+ * total length (`keyLength`) so the Settings page can render a
+ * length-matched password mask inside the password input. Storing /
+ * clearing the key goes through the Tauri keystore.
  */
 export interface LlmConfig {
   provider: ProviderId;
   configured: boolean;
+  keyLast4?: string;
+  keyLength?: number;
   model?: string;
   baseUrl?: string;
+}
+
+/**
+ * Live progress snapshot for the distill pipeline. Returned by
+ * `GET /api/distill/status` and emitted as `data:` events on
+ * `GET /api/distill/status/stream` (Server-Sent Events).
+ *
+ * Shape notes:
+ * - `isRunning` is the master switch — when `false`, the UI hides
+ *   the progress bar and stops animating.
+ * - `pending` is the best-effort count set by the run-start
+ *   (known for redistill; 0 for sync, where the exact count isn't
+ *   known until each source is fetched). The UI should treat
+ *   `pending === 0` as "indeterminate" and show a spinner without
+ *   a percentage.
+ * - `distilled` + `failed` are running counters — they only ever
+ *   go up during a run.
+ * - `currentTitle` / `currentSource` describe the item currently
+ *   being distilled, so the UI can show "正在蒸馏: <title>"
+ *   instead of an anonymous counter.
+ * - `lastError` carries a short error tag (e.g. "key_invalid")
+ *   when the run ended unsuccessfully. The UI uses it to show a
+ *   useful toast.
+ */
+export interface DistillProgress {
+  isRunning: boolean;
+  pending: number;
+  distilled: number;
+  failed: number;
+  currentTitle?: string | null;
+  currentSource?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  lastEventAt?: number;
+  lastError?: string | null;
 }
 
 /**

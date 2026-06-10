@@ -56,7 +56,15 @@
     "syncSuccess": "同步完成",
     "syncError": "同步失败",
     "syncResult": "同步完成 —— 新增 {{new}} 条，提炼 {{distilled}} 条",
-    "pendingDistill": "待提炼"
+    "pendingDistill": "待提炼",
+    "distillProgressIdle": "",
+    "distillProgressRunning": "正在蒸馏 {{distilled}}/{{pending}}…",
+    "distillProgressRunningIndeterminate": "正在蒸馏… 已完成 {{distilled}} 条",
+    "distillProgressCurrent": " — {{title}}",
+    "distillProgressDone": "蒸馏完成 —— 成功 {{distilled}} 条，失败 {{failed}} 条",
+    "distillProgressDoneNoFail": "蒸馏完成 —— 成功 {{distilled}} 条",
+    "distillProgressError": "蒸馏中止：{{error}}",
+    "distillProgressWhereToFind": "提炼后的条目会出现在这里，标题、摘要、要点、标签都是中文版。看到「待提炼」徽章消失就是完成了一条。"
   },
   "statusFilter": {
     "all": "全部",
@@ -146,14 +154,15 @@
     },
     "apiKeyDialog": {
       "title": "设置 API key",
-      "description": "保存在操作系统的钥匙串里，绝不会上传到 Prism 服务器。",
+      "description": "以 AES-256-GCM 加密保存在本机 `~/.prism/keystore.json`，绝不会上传到 Prism 服务器。",
       "placeholder": "sk-…",
       "submit": "保存",
       "cancel": "取消"
     },
     "setApiKey": "设置 API key",
     "clearApiKey": "清除",
-    "apiKeyDescription": "保存在操作系统钥匙串里——不会上传到 Prism。",
+    "apiKeyDescription": "以 AES-256-GCM 加密保存在本机 `~/.prism/keystore.json`，只在 sidecar 启动时作为环境变量注入，不会随任何网络请求离开你的电脑。",
+    "apiKeyDescriptionConfigured": "已保存到本机加密文件，留空可保留现有 key；输入新值会覆盖。",
     "manualSync": "立即手动同步",
     "provider": {
       "label": "LLM 提供方",
@@ -164,6 +173,9 @@
       "apiKey": "API key",
       "apiKeyPlaceholderDeepseek": "sk-…",
       "apiKeyPlaceholderMinimax": "ey…",
+      "apiKeyPlaceholderSaved": "已保存 — 输入新值可覆盖",
+      "showApiKey": "显示 key",
+      "hideApiKey": "隐藏 key",
       "model": "Model",
       "save": "保存",
       "saving": "保存中…",

@@ -56,7 +56,15 @@
     "syncSuccess": "Sync complete",
     "syncError": "Sync failed",
     "syncResult": "Sync complete — {{new}} new, {{distilled}} distilled",
-    "pendingDistill": "Pending distillation"
+    "pendingDistill": "Pending distillation",
+    "distillProgressIdle": "",
+    "distillProgressRunning": "Distilling {{distilled}}/{{pending}}…",
+    "distillProgressRunningIndeterminate": "Distilling… {{distilled}} so far",
+    "distillProgressCurrent": " — {{title}}",
+    "distillProgressDone": "Distillation complete — {{distilled}} distilled, {{failed}} failed",
+    "distillProgressDoneNoFail": "Distillation complete — {{distilled}} distilled",
+    "distillProgressError": "Distillation stopped: {{error}}",
+    "distillProgressWhereToFind": "Distilled items land here with a Chinese title, summary, key points, and tags. Look for the “Pending distillation” badge disappearing as items complete."
   },
   "statusFilter": {
     "all": "All",
@@ -146,14 +154,15 @@
     },
     "apiKeyDialog": {
       "title": "Set API key",
-      "description": "Stored in the OS keychain. Never sent anywhere except the LLM provider.",
+      "description": "Encrypted with AES-256-GCM in `~/.prism/keystore.json` on this machine. Never sent anywhere except the LLM provider.",
       "placeholder": "sk-…",
       "submit": "Save",
       "cancel": "Cancel"
     },
     "setApiKey": "Set API key",
     "clearApiKey": "Clear",
-    "apiKeyDescription": "Stored in the OS keychain — never uploaded to Prism.",
+    "apiKeyDescription": "Encrypted with AES-256-GCM in `~/.prism/keystore.json` on this machine. Injected as an env var only when the sidecar starts; never leaves your computer.",
+    "apiKeyDescriptionConfigured": "Saved to the local encrypted store. Leave blank to keep the current key; type a new value to replace it.",
     "manualSync": "Sync now (manual)",
     "provider": {
       "label": "LLM Provider",
@@ -164,6 +173,9 @@
       "apiKey": "API key",
       "apiKeyPlaceholderDeepseek": "sk-…",
       "apiKeyPlaceholderMinimax": "ey…",
+      "apiKeyPlaceholderSaved": "Saved — type a new value to replace",
+      "showApiKey": "Show key",
+      "hideApiKey": "Hide key",
       "model": "Model",
       "save": "Save",
       "saving": "Saving…",

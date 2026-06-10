@@ -7,12 +7,29 @@ import type { KnowledgeItem, Source, SyncResult } from "@/types";
 
 // Mock the whole api module — the InboxPage only needs the queries
 // (listItems / listSources) to render and the syncAll() promise to drive
-// the Sync button's state machine.
+// the Sync button's state machine. The distill-progress hook is also
+// consumed now (for the live progress strip), so we mock the new
+// endpoints with no-op defaults that resolve to an "idle" snapshot.
 vi.mock("@/lib/api", () => ({
   api: {
     listItems: vi.fn(),
     listSources: vi.fn(),
     syncAll: vi.fn(),
+    getDistillStatus: vi.fn(() =>
+      Promise.resolve({
+        isRunning: false,
+        pending: 0,
+        distilled: 0,
+        failed: 0,
+        currentTitle: null,
+        currentSource: null,
+        startedAt: null,
+        finishedAt: null,
+        lastEventAt: 0,
+        lastError: null,
+      }),
+    ),
+    subscribeDistillProgress: vi.fn(() => () => {}),
   },
   SIDECAR_BASE: "http://127.0.0.1:8765",
   PrismAPIError: class PrismAPIError extends Error {

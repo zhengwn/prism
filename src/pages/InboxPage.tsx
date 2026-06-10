@@ -8,9 +8,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { formatRelativeTime, cn } from "@/lib/utils";
-import { Inbox as InboxIcon, Star, CheckCircle2, RefreshCw, AlertCircle, Check } from "lucide-react";
-import type { KnowledgeItem } from "@/types";
+import { Inbox as InboxIcon, Star, CheckCircle2, RefreshCw, AlertCircle, Check, Sparkles } from "lucide-react";
+import type { DistillProgress, KnowledgeItem } from "@/types";
 import { useLanguage } from "@/hooks/useLanguage";
+import { useDistillProgress } from "@/hooks/useDistillProgress";
 
 type SyncUiState = "idle" | "running" | "success" | "error";
 
@@ -58,6 +59,13 @@ export function InboxPage() {
   const [syncState, setSyncState] = useState<SyncUiState>("idle");
   const [toast, setToast] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const resetTimer = useRef<number | null>(null);
+
+  // Live distill progress — drives the progress bar under the inbox
+  // header. We use this for both the determinate "X / Y" state
+  // (redistill, where we know `pending` up front) and the
+  // indeterminate spinner (sync, where `pending` is 0 until each
+  // source is fetched).
+  const distill = useDistillProgress();
 
   useEffect(() => {
     return () => {
@@ -169,7 +177,7 @@ export function InboxPage() {
       </div>
 
       {/* Items list */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex flex-1 flex-col overflow-hidden">
         <div className="flex h-12 items-center justify-between border-b px-4">
           <div>
             <h2 className="text-sm font-semibold">{t("inbox.title")}</h2>
@@ -203,7 +211,9 @@ export function InboxPage() {
           </div>
         </div>
 
-        <ScrollArea className="h-[calc(100%-3rem)]">
+        <DistillProgressBar progress={distill} />
+
+        <ScrollArea className="flex-1">
           {isLoading ? (
             <div className="space-y-2 p-4">
               {Array.from({ length: 6 }).map((_, i) => (
@@ -324,6 +334,163 @@ function EmptyState() {
         <h3 className="text-sm font-semibold">{t("inbox.emptyTitle")}</h3>
         <p className="text-xs text-muted-foreground">{t("inbox.emptyDescription")}</p>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Live distill progress strip — sits between the inbox header and
+ * the item list, animates while a run is in flight, and shows a
+ * one-shot success/fail summary when the run ends.
+ *
+ * Why a strip (not a modal/toast)
+ * --------------------------------
+ * The user explicitly asked "where did the distilled items go?"
+ * — a transient toast can't answer that. The strip is always in
+ * place and shows the running state with the current item title;
+ * once the run ends, we leave the summary up for ~6s so the user
+ * can read "X distilled, Y failed" and then auto-hide.
+ *
+ * "Distilled items land here" hint
+ * ---------------------------------
+ * Below the strip we render a one-line explainer that connects
+ * the abstract counter to the concrete list below ("items with
+ * the Pending badge will turn into Chinese titles here"). This is
+ * the most direct fix for "I don't know where the results went".
+ */
+function DistillProgressBar({ progress }: { progress: DistillProgress }) {
+  const { t } = useLanguage();
+
+  // Three states:
+  //   - running  : show bar + "正在蒸馏 X / Y — <current title>"
+  //   - finished : show a summary line for 6s, then auto-hide
+  //   - idle     : show the "where to find" hint line so first-time
+  //                users understand what the Pending badge means
+  type UiState = "idle" | "running" | "summary";
+  const [uiState, setUiState] = useState<UiState>("idle");
+  const [summary, setSummary] = useState<{
+    kind: "ok" | "fail";
+    text: string;
+  } | null>(null);
+  const summaryTimer = useRef<number | null>(null);
+
+  // Drive the strip's state machine from the live progress.
+  useEffect(() => {
+    if (progress.isRunning) {
+      setUiState("running");
+      setSummary(null);
+      return;
+    }
+    // Just ended. If anything happened, show a one-shot summary.
+    const total = progress.distilled + progress.failed;
+    if (total > 0) {
+      const text = progress.failed > 0
+        ? t("inbox.distillProgressDone", {
+            distilled: progress.distilled,
+            failed: progress.failed,
+          })
+        : t("inbox.distillProgressDoneNoFail", {
+            distilled: progress.distilled,
+          });
+      setSummary({
+        kind: progress.failed > 0 ? "fail" : "ok",
+        text: progress.lastError
+          ? t("inbox.distillProgressError", { error: progress.lastError })
+          : text,
+      });
+      setUiState("summary");
+      if (summaryTimer.current !== null) window.clearTimeout(summaryTimer.current);
+      summaryTimer.current = window.setTimeout(() => {
+        setUiState("idle");
+        setSummary(null);
+      }, 6_000);
+    } else {
+      setUiState("idle");
+      setSummary(null);
+    }
+  }, [progress.isRunning, progress.distilled, progress.failed, progress.lastError, t]);
+
+  useEffect(() => {
+    return () => {
+      if (summaryTimer.current !== null) window.clearTimeout(summaryTimer.current);
+    };
+  }, []);
+
+  if (uiState === "running") {
+    const isDeterminate = progress.pending > 0;
+    const percent = isDeterminate
+      ? Math.min(100, Math.round((progress.distilled / progress.pending) * 100))
+      : 0;
+    return (
+      <div
+        data-testid="distill-progress-bar"
+        data-state="running"
+        className="border-b bg-primary/5 px-4 py-2 text-xs"
+      >
+        <div className="mb-1.5 flex items-center gap-2">
+          <Sparkles className="h-3.5 w-3.5 animate-pulse text-primary" />
+          <span className="font-medium text-foreground">
+            {isDeterminate
+              ? t("inbox.distillProgressRunning", {
+                  distilled: progress.distilled,
+                  pending: progress.pending,
+                })
+              : t("inbox.distillProgressRunningIndeterminate", {
+                  distilled: progress.distilled,
+                })}
+          </span>
+          {progress.currentTitle && (
+            <span className="truncate text-muted-foreground">
+              {t("inbox.distillProgressCurrent", { title: progress.currentTitle })}
+            </span>
+          )}
+        </div>
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+          <div
+            className={cn(
+              "h-full rounded-full bg-primary transition-all duration-200",
+              isDeterminate ? "" : "animate-pulse",
+            )}
+            style={isDeterminate ? { width: `${percent}%` } : { width: "30%" }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (uiState === "summary" && summary) {
+    return (
+      <div
+        data-testid="distill-progress-bar"
+        data-state="summary"
+        className={cn(
+          "border-b px-4 py-2 text-xs",
+          summary.kind === "ok"
+            ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+            : "bg-destructive/10 text-destructive",
+        )}
+      >
+        <div className="flex items-center gap-2">
+          {summary.kind === "ok" ? (
+            <Check className="h-3.5 w-3.5" />
+          ) : (
+            <AlertCircle className="h-3.5 w-3.5" />
+          )}
+          <span className="font-medium">{summary.text}</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Idle: always show the "where to find" hint so first-time users
+  // understand what the Pending badge means.
+  return (
+    <div
+      data-testid="distill-progress-bar"
+      data-state="idle"
+      className="border-b bg-muted/30 px-4 py-1.5 text-[11px] text-muted-foreground"
+    >
+      {t("inbox.distillProgressWhereToFind")}
     </div>
   );
 }
