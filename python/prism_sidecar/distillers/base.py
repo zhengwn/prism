@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol, runtime_checkable
 
@@ -82,7 +83,9 @@ PROMPT_TEMPLATE = """你是一名 AI 行业分析师。请把以下内容提炼�
 原文标题：{title_en}
 原文内容：{content}
 
-返回 JSON 格式：{{"title_zh": "...", "summary_zh": "...", "key_points_zh": [...], "tags_zh": [...]}}
+严格返回 JSON（必须是合法 JSON，**字符串内的双引号必须用反斜杠转义成 \\"，不得使用中文全角引号 " "**）。
+格式示例：
+{{"title_zh": "...", "summary_zh": "...", "key_points_zh": [...], "tags_zh": [...]}}
 """
 
 
@@ -94,32 +97,163 @@ def _build_prompt(raw: RawItem) -> str:
     return PROMPT_TEMPLATE.format(title_en=raw.title, content=content)
 
 
+# ----- Response-shape rescue helpers ---------------------------------------
+#
+# Chinese-language LLMs (DeepSeek, MiniMax / M3, Qwen, GLM…) have a habit
+# of "helping" by replacing ASCII double-quotes inside JSON string values
+# with the full-width Chinese ones (U+201C / U+201D). That makes the
+# response a syntactic nightmare for `json.loads` even though the model
+# is semantically returning the right thing. We see this in the wild as:
+#
+#   {"summary_zh": "… 他认为"诚意"是…"}
+#                            ^ ASCII " inside what should be a quoted string
+#
+# We do best-effort rescue in this order:
+#   1. parse the raw text as-is
+#   2. try a markdown ```json ... ``` fence extract
+#   3. try the outermost {...} slice
+#   4. try the same with full-width Chinese quotes swapped back to ASCII
+#   5. give up
+#
+# Steps 2 + 4 together handle the two failure modes we see in production
+# logs; if a future model adds a third we can extend the chain without
+# touching the call sites.
+
+# Matches a markdown-fenced JSON block: ```json\n...\n``` (the language
+# tag is optional; we accept ```\n...\n``` too).
+_FENCED_JSON_RE = re.compile(
+    r"```(?:json|JSON)?\s*\n([\s\S]*?)\n```",
+    re.MULTILINE,
+)
+# Matches ASCII " sandwiched between two CJK characters (or a CJK char
+# and a common opener/closer). These are the "smuggled" full-width-looking
+# quotes the model writes instead of escaping. Replacing them with the
+# actual full-width U+201C / U+201D makes the response parseable; the
+# string content is unchanged from the human's point of view.
+_CJK_BETWEEN_QUOTES_RE = re.compile(
+    r'(?<=[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef])"(?=[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef])'
+)
+
+
+def _swap_chinese_quotes(text: str) -> str:
+    """Replace ASCII " between CJK characters with U+201C / U+201D.
+
+    Walks the matches left-to-right and alternates open/close so that
+    a sequence like  汉字"开头"和"结尾"汉字  becomes
+    汉字"开头"和"结尾"汉字  — the natural reading pair in Chinese
+    typography. Symmetric (all "): the alternation ensures every other
+    match opens the next pair.
+    """
+    out: list[str] = []
+    cursor = 0
+    open_quote = True
+    for m in _CJK_BETWEEN_QUOTES_RE.finditer(text):
+        out.append(text[cursor:m.start()])
+        out.append("\u201c" if open_quote else "\u201d")
+        open_quote = not open_quote
+        cursor = m.end()
+    out.append(text[cursor:])
+    return "".join(out)
+
+
+def _extract_balanced_json_object(text: str) -> Optional[str]:
+    """Return the first balanced ``{...}`` substring, or None.
+
+    Naive `text[text.find("{"):text.rfind("}")+1]` can be fooled by
+    ``{`` inside a string value (e.g. a key_points_zh list with a brace
+    in the literal text) — we do a small state machine to find a real
+    balanced object. Still not a full JSON parser, but enough for the
+    rescue path.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+    return None
+
+
+def _try_parse(text: str) -> Optional[dict]:
+    """Attempt to parse `text` as JSON, returning a dict or None.
+
+    Used by `_parse_response` as the inner step of each rescue attempt.
+    """
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _parse_response(raw_json: str) -> DistilledItem:
     """Parse the model's JSON output into a DistilledItem.
 
-    Tolerant: if the model returns extra prose around the JSON, find the
-    first {...} block and try that.
+    Tolerant, in order:
+
+    1. Parse the whole stripped response as JSON.
+    2. Extract a ```` ```json ... ``` ```` fenced block.
+    3. Slice the first balanced ``{...}`` substring.
+    4. Same as (3) but with full-width Chinese quotes swapped back in
+       for ASCII quotes that are sandwiched between CJK characters
+       (the model's "I'll just use smart quotes" habit).
+    5. Raise with a sample of the response so the retry log is useful.
     """
     text = raw_json.strip()
+    if not text:
+        raise ValueError("distiller returned empty response")
 
-    # Fast path: whole response is JSON.
-    try:
-        data = json.loads(text)
+    # --- (1) raw parse
+    data = _try_parse(text)
+    if data is not None:
         return _to_distilled(data)
-    except json.JSONDecodeError:
-        pass
 
-    # Fallback: locate the first {...} block.
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        candidate = text[start : end + 1]
-        try:
-            data = json.loads(candidate)
+    # --- (2) markdown fence
+    for fence in _FENCED_JSON_RE.findall(text):
+        data = _try_parse(fence.strip())
+        if data is not None:
             return _to_distilled(data)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"distiller returned non-JSON response: {candidate[:200]!r}") from exc
-    raise ValueError("distiller returned no JSON object")
+
+    # --- (3) first balanced {...} slice
+    candidate = _extract_balanced_json_object(text)
+    if candidate is not None:
+        data = _try_parse(candidate)
+        if data is not None:
+            return _to_distilled(data)
+
+        # --- (4) same slice with full-width quote rescue
+        rescued = _swap_chinese_quotes(candidate)
+        if rescued != candidate:
+            data = _try_parse(rescued)
+            if data is not None:
+                log.info(
+                    "[distiller] recovered from CJK-smart-quote JSON "
+                    "(len=%d, swaps applied)",
+                    len(rescued) - len(candidate),
+                )
+                return _to_distilled(data)
+
+    raise ValueError(
+        f"distiller returned non-JSON response: {text[:200]!r}"
+    )
 
 
 def _to_distilled(data: Any) -> DistilledItem:
@@ -325,4 +459,6 @@ __all__ = [
     "_looks_like_key_invalid",  # back-compat
     "_build_prompt",
     "_parse_response",
+    "_swap_chinese_quotes",
+    "_extract_balanced_json_object",
 ]

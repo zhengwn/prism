@@ -89,6 +89,95 @@ def test_parse_response_rejects_garbage():
         _parse_response("not json at all")
 
 
+# ---- Response-shape rescue (markdown fence + CJK smart-quote smuggle) ----
+#
+# v0.2a: real DeepSeek / MiniMax (M3) responses have ASCII " smuggled
+# inside CJK text and are sometimes wrapped in ```json fences even
+# though we set `response_format=json_object`. These cases must parse
+# cleanly so we don't burn a retry on something the model already got
+# semantically right.
+
+
+def test_parse_response_handles_markdown_fence():
+    """Some models (notably when the system prompt drifts) wrap their
+    JSON in ```json ... ``` even with response_format=json_object. We
+    must extract the inner block, not the fence."""
+    wrapped = "```json\n" + json.dumps(SAMPLE_GOOD) + "\n```"
+    out = _parse_response(wrapped)
+    assert out.title_zh == "OpenAI 发布 GPT-5"
+    assert len(out.key_points_zh) == 3
+
+
+def test_parse_response_handles_bare_markdown_fence():
+    """Some models use ``` without a language tag."""
+    wrapped = "```\n" + json.dumps(SAMPLE_GOOD) + "\n```"
+    out = _parse_response(wrapped)
+    assert out.title_zh == "OpenAI 发布 GPT-5"
+
+
+def test_parse_response_recovers_from_cjk_smart_quotes():
+    """The exact failure mode we saw in production: the model writes
+    `"诚意"` (ASCII quotes around a CJK word) inside what is otherwise
+    a valid JSON string value. That closes the string early, the
+    rest of the response becomes garbage, and the parser raises
+    `non-JSON response`.
+
+    We rescue by swapping the smuggled ASCII quotes for proper
+    full-width U+201C / U+201D before the second parse attempt.
+    """
+    # We build the text by hand to faithfully reproduce what an LLM
+    # actually emits: ASCII " inside a JSON string value with no
+    # backslash escape. `json.dumps` would itself emit a valid JSON
+    # (escaped) so we cannot use it here.
+    text = (
+        '{'
+        '"title_zh": "Andreas Kling 拒绝接受公开 PR",'
+        '"summary_zh": "SerenityOS 创始人认为，AI 时代下代码'
+        '"投入大量精力"不再是贡献者善意的可靠信号，"诚意"才是。",'
+        '"key_points_zh": ["不再接受公开 PR", "AI 改变贡献者评估"],'
+        '"tags_zh": ["开源", "AI"]'
+        '}'
+    )
+    # sanity check: this string really should NOT parse cleanly.
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(text)
+    # ...but our tolerant parser must rescue it.
+    out = _parse_response(text)
+    assert out.title_zh == "Andreas Kling 拒绝接受公开 PR"
+    assert "\u201c诚意\u201d" in out.summary_zh
+    assert out.key_points_zh[0] == "不再接受公开 PR"
+
+
+def test_parse_response_recovers_cjk_quotes_inside_fence():
+    """Rescue path must compose: even when both fence and smuggled
+    quotes are present, we should still get a DistilledItem."""
+    text = (
+        "```json\n"
+        '{'
+        '"title_zh": "x",'
+        '"summary_zh": "他说"这是"重点。",'
+        '"key_points_zh": ["k"],'
+        '"tags_zh": ["t"]'
+        '}\n'
+        "```"
+    )
+    out = _parse_response(text)
+    assert out.title_zh == "x"
+    assert "\u201c" in out.summary_zh
+
+
+def test_parse_response_rejects_empty():
+    with pytest.raises(ValueError):
+        _parse_response("")
+
+
+def test_parse_response_rejects_real_garbage_after_rescue():
+    """The rescue must not turn completely unrelated text into a
+    false positive. The rescue path always fails gracefully."""
+    with pytest.raises(ValueError):
+        _parse_response("hello world, here is some prose with no JSON at all anywhere")
+
+
 # ---- DeepSeek-specific: class wiring + env var name ----------------------
 
 
