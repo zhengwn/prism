@@ -300,18 +300,97 @@ async def list_items(
     where: list[str] = []
     args: list[Any] = []
 
+    # When `q` is supplied we go through the FTS5 index. That gives us:
+    #   - prefix matching (typing "and" finds "Andreas")
+    #   - real index usage (no LIKE '%x%' table scan)
+    #   - Chinese single-character tokenization that still beats LIKE
+    #     on substring match by a wide margin
+    # The FTS path is opt-in: an empty / whitespace-only query
+    # falls back to the original non-FTS code path below, which
+    # is what `GET /api/items` with no `?q=` does for the inbox's
+    # default render.
+    fts_match: Optional[str] = None
+    if q:
+        # Imported lazily so this module stays import-cheap for the
+        # tests that don't care about FTS.
+        from prism_sidecar.fts5 import sanitize_fts5_query
+
+        fts_match = sanitize_fts5_query(q)
+
+    if fts_match is not None:
+        # FTS5 path: drive the item list from the index, then join
+        # back to items + sources for the rest of the columns.
+        #
+        # The two queries are kept separate (rather than a single
+        # JOIN across items_fts and items) for two reasons:
+        #   1. Both tables have a `rowid` column and SQLite gets
+        #      confused if you JOIN them and then try to filter or
+        #      order by rowid — it raises "ambiguous column name".
+        #   2. We need the FTS rank order preserved in the final
+        #      list. Pulling rowids in the right order first and
+        #      then re-ordering the joined result with a CASE is
+        #      the cleanest way to do that.
+        cur = await db.execute(
+            "SELECT rowid FROM items_fts WHERE items_fts MATCH ? "
+            "ORDER BY rank LIMIT ? OFFSET ?",
+            (fts_match, int(limit), int(offset)),
+        )
+        rowids = [r[0] for r in await cur.fetchall()]
+        if not rowids:
+            return []
+        # Look up the human-readable id for each rowid, preserving
+        # the FTS rank order. We can't use the rowid directly in
+        # the items WHERE because items.id is a TEXT primary key,
+        # not the rowid. (WITHOUT ROWID tables are different; ours
+        # is a normal heap table so id != rowid.)
+        cur = await db.execute(
+            f"SELECT id FROM items WHERE rowid IN ({','.join('?' for _ in rowids)})",
+            tuple(rowids),
+        )
+        rid_to_id: dict[int, str] = dict(zip(rowids, [r[0] for r in await cur.fetchall()]))
+        # Drop any rowids that no longer exist (deleted between
+        # the FTS query and the lookup). Shouldn't happen in
+        # practice but we want a graceful result, not a crash.
+        ordered_ids = [rid_to_id[r] for r in rowids if r in rid_to_id]
+        if not ordered_ids:
+            return []
+        # Final query: fetch the full row, preserving FTS rank
+        # order via CASE on the id. (JOIN with sources for the
+        # human-readable name the inbox sidebar uses.)
+        order_case = " ".join(
+            f"WHEN i.id = ? THEN {i}" for i in range(len(ordered_ids))
+        )
+        placeholders = ",".join("?" for _ in ordered_ids)
+        sql = f"""
+            SELECT i.id, i.source_id, i.url, i.title_en, i.title_zh, i.summary_en,
+                   i.summary_zh, i.key_points_zh, i.tags_zh, i.author,
+                   i.published_at, i.fetched_at, i.distilled_at, i.status,
+                   i.content_type, i.duration_sec, i.metadata_json,
+                   s.name AS source_name
+            FROM items i
+            JOIN sources s ON s.id = i.source_id
+            WHERE i.id IN ({placeholders})
+            ORDER BY CASE {order_case} END
+        """
+        params: list[Any] = list(ordered_ids) + list(ordered_ids)
+        cur = await db.execute(sql, tuple(params))
+        rows = await cur.fetchall()
+        items: list[KnowledgeItem] = []
+        for row in rows:
+            source_name = row[-1]
+            item_row = row[:-1]
+            items.append(_row_to_item(item_row, source_name=source_name))
+        return items
+
+    # Non-FTS path: existing source / status filters, no full-text
+    # search. Kept identical to v0.2a so the inbox's default render
+    # (no `?q=`) doesn't pay the FTS query-plan cost.
     if source_id:
         where.append("i.source_id = ?")
         args.append(source_id)
     if status and status != "all":
         where.append("i.status = ?")
         args.append(status)
-    if q:
-        like = f"%{q}%"
-        where.append(
-            "(i.title_en LIKE ? OR i.title_zh LIKE ? OR i.summary_en LIKE ? OR i.summary_zh LIKE ?)"
-        )
-        args.extend([like, like, like, like])
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
     sql = f"""

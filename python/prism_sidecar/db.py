@@ -25,7 +25,12 @@ PRISM_DATA_DIR = _config.PRISM_DATA_DIR
 
 # Schema version. Bump on every migration; the `_meta` table records what
 # the on-disk DB is at so we can run upgrade migrations in order.
-SCHEMA_VERSION = 1
+#
+# v1: initial schema (sources, items, sync_log, sync_jobs, _meta)
+# v2: add FTS5 virtual table `items_fts` for full-text search across
+#     title_en / title_zh / summary_en / summary_zh / key_points_zh /
+#     tags_zh, with triggers that keep it in sync with the items table.
+SCHEMA_VERSION = 2
 
 
 SCHEMA_SQL = """
@@ -102,6 +107,27 @@ CREATE TABLE IF NOT EXISTS _meta (
 """
 
 
+# v2 FTS5 DDL — kept outside SCHEMA_SQL so a v0.2a install (schema
+# version 1) can be migrated forward to v2 without recreating the
+# items / sources tables. The migration runs once, in order, in
+# _run_migrations below.
+#
+# Tokenizer note: we use plain `unicode61` — do NOT pass
+# `remove_diacritics 2`. The `remove_diacritics` flag incidentally
+# treats non-Latin scripts differently in a way that breaks
+# Chinese single-character prefix search (verified against
+# sqlite3 3.45+: typing "开" no longer finds "开源" because
+# unicode61+remove_diacritics merges adjacent CJK codepoints
+# into multi-char tokens).
+_V2_FTS5_DDL = (
+    "CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5("
+    "title_en, title_zh, summary_en, summary_zh, key_points_zh, tags_zh, "
+    "content='items', content_rowid='rowid', "
+    "tokenize='unicode61'"
+    ")"
+)
+
+
 _db: aiosqlite.Connection | None = None
 
 
@@ -113,12 +139,71 @@ def _ensure_data_dir() -> None:
 async def _run_migrations(db: aiosqlite.Connection) -> None:
     """Run pending schema migrations.
 
-    v0.2a only ships v1; future versions should add idempotent ALTER TABLE
-    statements gated on the value of `_meta.schema_version`.
+    v0.2a ships v1; v2 adds the FTS5 virtual table for full-text
+    search. The FTS5 trigger DDL must be issued one statement at a
+    time rather than inside `executescript` — aiosqlite wraps
+    executescript in an implicit transaction, and trigger DDL
+    re-enters the schema lock the same worker thread is holding,
+    which deadlocks the connection (test fixtures hang
+    indefinitely). Plain CREATE TABLE / INDEX is fine inside
+    executescript.
+
+    Upgrade path
+    ------------
+    A v0.2a install has `_meta.schema_version = '1'`. We:
+      1. Apply the v1 baseline (idempotent CREATE TABLE IF NOT EXISTS).
+      2. If schema_version < 2, create the FTS5 table + triggers
+         and backfill the index from existing items.
+      3. Bump schema_version to 2.
     """
+    # Step 1: baseline (v1) DDL — all idempotent.
     await db.executescript(SCHEMA_SQL)
+
+    # Step 2: read current version (default to 0 for fresh installs
+    # that just got the _meta table above).
+    cur = await db.execute(
+        "SELECT value FROM _meta WHERE key = 'schema_version'"
+    )
+    row = await cur.fetchone()
+    current_version = int(row[0]) if row else 0
+
+    if current_version < 2:
+        # 2a. FTS5 virtual table.
+        await db.execute(_V2_FTS5_DDL)
+
+        # 2b. FTS5 sync triggers — one execute() per trigger, never
+        #     inside executescript (see deadlock note above).
+        for ddl in (
+            "CREATE TRIGGER IF NOT EXISTS items_ai AFTER INSERT ON items BEGIN "
+            "INSERT INTO items_fts(rowid, title_en, title_zh, summary_en, summary_zh, key_points_zh, tags_zh) "
+            "VALUES (new.rowid, new.title_en, new.title_zh, new.summary_en, new.summary_zh, new.key_points_zh, new.tags_zh); "
+            "END",
+            "CREATE TRIGGER IF NOT EXISTS items_ad AFTER DELETE ON items BEGIN "
+            "INSERT INTO items_fts(items_fts, rowid, title_en, title_zh, summary_en, summary_zh, key_points_zh, tags_zh) "
+            "VALUES ('delete', old.rowid, old.title_en, old.title_zh, old.summary_en, old.summary_zh, old.key_points_zh, old.tags_zh); "
+            "END",
+            "CREATE TRIGGER IF NOT EXISTS items_au AFTER UPDATE ON items BEGIN "
+            "INSERT INTO items_fts(items_fts, rowid, title_en, title_zh, summary_en, summary_zh, key_points_zh, tags_zh) "
+            "VALUES ('delete', old.rowid, old.title_en, old.title_zh, old.summary_en, old.summary_zh, old.key_points_zh, old.tags_zh); "
+            "INSERT INTO items_fts(rowid, title_en, title_zh, summary_en, summary_zh, key_points_zh, tags_zh) "
+            "VALUES (new.rowid, new.title_en, new.title_zh, new.summary_en, new.summary_zh, new.key_points_zh, new.tags_zh); "
+            "END",
+        ):
+            await db.execute(ddl)
+
+        # 2c. Backfill: copy any pre-existing items into the FTS
+        #     index. Fresh installs have zero rows so this is a
+        #     no-op. For a v0.2a upgrade, this materialises the
+        #     search index without requiring a re-sync.
+        await db.execute(
+            "INSERT INTO items_fts(rowid, title_en, title_zh, summary_en, summary_zh, key_points_zh, tags_zh) "
+            "SELECT rowid, title_en, title_zh, summary_en, summary_zh, key_points_zh, tags_zh "
+            "FROM items"
+        )
+
+    # Step 3: bump schema_version to the current target.
     await db.execute(
-        "INSERT OR IGNORE INTO _meta(key, value) VALUES('schema_version', ?)",
+        "INSERT OR REPLACE INTO _meta(key, value) VALUES('schema_version', ?)",
         (str(SCHEMA_VERSION),),
     )
     await db.commit()
