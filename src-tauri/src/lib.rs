@@ -1,6 +1,7 @@
-// The `secrets` and `sidecar` modules are exposed for integration tests
-// under `tests/` (the smoke tests roundtrip the multi-slot keychain
-// layout and check the provider schema).
+// The `keystore` / `secrets` / `sidecar` modules are exposed for
+// integration tests under `tests/` (the smoke tests roundtrip the
+// encrypted-file store and check the provider schema).
+pub mod keystore;
 pub mod secrets;
 mod sidecar;
 
@@ -10,14 +11,15 @@ use sidecar::SidecarState;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        // OS-keychain plugin — exposes `app.keyring()` to Rust code and (if
-        // we ever want it) the `tauri-plugin-keyring-api` JS package to the
-        // webview. For v0.2a we call the Rust API directly from our own
-        // `secrets` module; the webview only sees our custom commands and
-        // never touches the keychain directly.
-        .plugin(tauri_plugin_keyring::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
+            // One-shot migration from the v0.2a OS-keychain layout to the
+            // new local encrypted-file keystore. Idempotent — once the
+            // keystore file exists, this is a no-op. The first call on
+            // a v0.2a install triggers one macOS prompt; after that the
+            // keychain is never touched again.
+            keystore::migrate_from_keychain_if_needed(app.handle());
+
             // Register the sidecar child-handle state up front so `spawn()`
             // and `restart()` can both update the same slot without
             // double-`manage()` panicking.

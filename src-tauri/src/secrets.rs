@@ -1,43 +1,47 @@
 /**
- * API-key storage backed by the OS keychain.
+ * API-key storage backed by a local encrypted-file keystore.
  *
- * We use the `tauri-plugin-keyring` plugin (which wraps the `keyring` crate) so
- * we get the same capability-gated API surface as the rest of the Tauri plugin
- * ecosystem. On macOS this lands in Keychain Access, on Windows in the
- * Credential Manager, and on Linux in the Secret Service (libsecret).
+ * The actual storage lives in `keystore.rs`. This module is a thin
+ * compatibility shim that preserves the v0.2a public API
+ * (`read_llm_key`, `write_llm_key`, `read_active_provider`, …, plus the
+ * `get_api_key_status` / `set_api_key` / `clear_api_key` Tauri commands)
+ * so the rest of the Tauri shell — and the frontend's IPC contract — is
+ * unchanged.
  *
- * # v0.2a+ keychain layout (DeepSeek + MiniMax only)
+ * # v0.2a → v0.2a-providers layout (unchanged contract)
  *
- * | Username                       | Value                              | Purpose                          |
- * |--------------------------------|------------------------------------|----------------------------------|
- * | `llm-provider:active`          | provider id string (`"deepseek"`)  | which provider is active         |
- * | `llm-key:deepseek`             | api key                            | DeepSeek key                     |
- * | `llm-key:minimax`              | api key                            | MiniMax M3 key                   |
- * | `llm-config:custom`            | JSON `{base_url, model}`           | (legacy) MiniMax override blob   |
+ * | Slot                | Type            | Purpose                          |
+ * |---------------------|-----------------|----------------------------------|
+ * | `llm-provider:active` | provider id   | which provider is active         |
+ * | `llm-key:deepseek`    | api key       | DeepSeek key                     |
+ * | `llm-key:minimax`     | api key       | MiniMax M3 key                   |
+ * | `llm-config:custom`   | JSON blob     | MiniMax override (base_url + model) |
  *
- * All entries live under the same service name (`com.prism.desktop`) so they
- * show up grouped in the OS keychain UI.
+ * All slots used to live in the OS keychain under service
+ * `com.prism.desktop`. v0.2a+ moves them into a single encrypted file at
+ * `~/.prism/keystore.json` (master key at `~/.prism/keystore.key`).
+ * See `keystore.rs` for the on-disk format and encryption details.
  *
- * # v0.2a → v0.2a-providers migration
+ * # Migration from the v0.2a OS-keychain layout
  *
- * The pre-providers v0.2a build stored a single key under the username
- * `deepseek-api-key`. The first time the new code reads
- * `read_active_provider()` and finds no active provider set, it will:
- *
- * 1. Read `deepseek-api-key` if present
- * 2. Write it to `llm-key:deepseek`
- * 3. Set `llm-provider:active = "deepseek"`
- * 4. Delete the legacy `deepseek-api-key` slot
- *
- * Migration is idempotent: once `llm-provider:active` exists, the old slot is
- * never read again. A user who already set OpenAI in v0.2b+ before this
- * refactor would not be affected.
+ * `keystore::migrate_from_keychain_if_needed` runs once on first
+ * startup. If the new keystore file is missing but the OS keychain has
+ * entries, it copies them across and deletes the keychain entries. The
+ * first call triggers one macOS prompt; after that the keychain is
+ * never touched again. Idempotent — once the keystore file exists, the
+ * migration is a no-op.
  *
  * # SECURITY
  *
  * - The key value is **never** returned to the frontend. Only `configured: bool`
  *   crosses the JS↔Rust bridge on the read direction. A compromised renderer
  *   cannot exfiltrate keys.
+ * - The keystore file lives at `~/.prism/keystore.json` with permission
+ *   0600 (Unix). The trust model is a single-user desktop app — anyone
+ *   with read access to the user's home directory can read the file.
+ *   This matches the trust model of the macOS Keychain in practice
+ *   (an attacker who can read the macOS Keychain database can
+ *   also read the keys).
  * - The legacy `set_api_key` / `get_api_key_status` / `clear_api_key` Tauri
  *   commands remain as thin wrappers around the deepseek slot for backwards
  *   compatibility with the v0.2a Settings page.
@@ -45,7 +49,11 @@
 
 use serde::{Deserialize, Serialize};
 use tauri::Runtime;
-use tauri_plugin_keyring::KeyringExt;
+
+/// Re-export of the encrypted-file storage backend. All keychain-style
+/// helpers below are thin forwarders to this module. The actual IO /
+/// encryption / migration logic lives in `keystore.rs`.
+use crate::keystore;
 
 /// Service name registered in the OS keychain. Bundled with the bundle
 /// identifier (`com.prism.desktop`) for namespace safety.
@@ -159,55 +167,31 @@ pub struct ProviderSchema {
 }
 
 // ---------------------------------------------------------------------------
-// Low-level keychain helpers — generic over the Tauri Runtime so the same
-// code paths work in production, in tests (via `tauri::test::mock_app()`),
-// and in unit-test-style direct callers.
+// Low-level helpers — all forwarded to `keystore`. The Tauri-handle
+// wrappers in `keystore.rs` resolve `~/.prism/` and call the
+// path-taking core. Anything that needs a multi-step migration lives in
+// `keystore::migrate_from_keychain_if_needed` (called once on startup
+// from `lib.rs`).
 // ---------------------------------------------------------------------------
 
-fn read_slot<R: Runtime>(app: &tauri::AppHandle<R>, username: &str) -> Option<String> {
-    match app.keyring().get_password(SERVICE, username) {
-        Ok(maybe_value) => maybe_value,
-        Err(e) => {
-            eprintln!("[prism] keychain read error for {username}: {e}");
-            None
-        }
-    }
-}
-
-fn write_slot<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    username: &str,
-    value: &str,
-) -> Result<(), String> {
-    app.keyring()
-        .set_password(SERVICE, username, value)
-        .map_err(|e| format!("keychain set failed for {username}: {e}"))
-}
-
-fn delete_slot<R: Runtime>(app: &tauri::AppHandle<R>, username: &str) -> Result<(), String> {
-    match app.keyring().delete_password(SERVICE, username) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.to_lowercase().contains("no entry") || msg.contains("NoEntry") {
-                Ok(())
-            } else {
-                Err(format!("keychain delete failed for {username}: {msg}"))
-            }
-        }
-    }
+/// Custom-mode configuration: base_url + model. Serialized to JSON in
+/// the keystore.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CustomLlmConfig {
+    pub base_url: String,
+    pub model: String,
 }
 
 // ---------------------------------------------------------------------------
-// Public helpers for the multi-slot keychain layout.
+// Public helpers for the multi-slot layout — all thin forwarders to
+// `keystore::*`. Signatures preserved verbatim from the keychain era so
+// `sidecar.rs` doesn't need to change.
 // ---------------------------------------------------------------------------
 
 /// Read the API key for a given provider. Returns `None` if absent or on
-/// keychain backend error. Never returns the legacy `deepseek-api-key` slot —
-/// callers wanting the active provider's key should go through
-/// `read_active_provider` first.
+/// keystore IO / decrypt error.
 pub fn read_llm_key<R: Runtime>(app: &tauri::AppHandle<R>, provider: &str) -> Option<String> {
-    read_slot(app, &llm_key_username(provider))
+    keystore::read_llm_key(app, provider)
 }
 
 /// Write the API key for a given provider. The caller is expected to
@@ -217,10 +201,7 @@ pub fn write_llm_key<R: Runtime>(
     provider: &str,
     key: &str,
 ) -> Result<(), String> {
-    if !is_known_provider(provider) {
-        return Err(format!("unknown provider: {provider}"));
-    }
-    write_slot(app, &llm_key_username(provider), key)
+    keystore::write_llm_key(app, provider, key)
 }
 
 /// Delete the API key for a given provider. Idempotent — deleting a
@@ -229,87 +210,47 @@ pub fn delete_llm_key<R: Runtime>(
     app: &tauri::AppHandle<R>,
     provider: &str,
 ) -> Result<(), String> {
-    delete_slot(app, &llm_key_username(provider))
+    keystore::delete_llm_key(app, provider)
 }
 
-/// Custom-mode configuration: base_url + model. Serialized to JSON when
-/// stored in the keychain.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CustomLlmConfig {
-    pub base_url: String,
-    pub model: String,
+/// Last 4 characters of the stored API key — useful for the Settings UI
+/// "••••abcd" rendering. Returns `None` if no key is set.
+pub fn key_last4<R: Runtime>(app: &tauri::AppHandle<R>, provider: &str) -> Option<String> {
+    keystore::key_last4(app, provider)
 }
 
 /// Read the stored `custom` provider config (base_url + model).
-/// Returns `None` if absent, malformed, or on keychain error.
+/// Returns `None` if absent or on IO error.
 pub fn read_custom_config<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<CustomLlmConfig> {
-    let raw = read_slot(app, USERNAME_LLM_CONFIG_CUSTOM)?;
-    match serde_json::from_str::<CustomLlmConfig>(&raw) {
-        Ok(cfg) => Some(cfg),
-        Err(e) => {
-            eprintln!("[prism] llm-config:custom is not valid JSON: {e}");
-            None
-        }
-    }
+    keystore::read_custom_config(app)
 }
 
-/// Write the `custom` provider config (base_url + model). The blob is
-/// stored as JSON in the keychain.
+/// Write the `custom` provider config (base_url + model).
 pub fn write_custom_config<R: Runtime>(
     app: &tauri::AppHandle<R>,
     cfg: &CustomLlmConfig,
 ) -> Result<(), String> {
-    let json = serde_json::to_string(cfg).map_err(|e| format!("serialize CustomLlmConfig: {e}"))?;
-    write_slot(app, USERNAME_LLM_CONFIG_CUSTOM, &json)
+    keystore::write_custom_config(app, cfg)
 }
 
-/// Read the active provider id, performing the lazy v0.2a → v0.2a-providers
-/// migration on first call.
+/// Read the active provider id. The v0.2a → v0.2a-providers lazy
+/// migration is now handled by `keystore::migrate_from_keychain_if_needed`
+/// at startup (one-shot, before the sidecar is spawned), so this
+/// function just returns the persisted value or `None`.
 ///
-/// Migration rules (idempotent):
-/// 1. If `llm-provider:active` is set → return it directly.
-/// 2. Else if the legacy `deepseek-api-key` slot is present → migrate it to
-///    `llm-key:deepseek` + `llm-provider:active = "deepseek"`, delete the
-///    legacy slot, return `Some("deepseek")`.
-/// 3. Else → return `None`. Callers (e.g. `sidecar::spawn`) should fall back
-///    to a sensible default such as `"deepseek"`.
+/// Callers (e.g. `sidecar::spawn`) should fall back to a sensible
+/// default such as `"deepseek"` when this returns `None`.
 pub fn read_active_provider<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<String> {
-    if let Some(active) = read_slot(app, USERNAME_LLM_PROVIDER_ACTIVE) {
-        if !active.is_empty() {
-            return Some(active);
-        }
-    }
-
-    // No active provider — check for the legacy v0.2a slot.
-    if let Some(legacy_key) = read_slot(app, USERNAME_DEEPSEEK_LEGACY) {
-        eprintln!("[prism] migrating v0.2a API key to multi-provider slot");
-        if let Err(e) = write_slot(app, &llm_key_username("deepseek"), &legacy_key) {
-            eprintln!("[prism] migration write to llm-key:deepseek failed: {e}");
-            return None;
-        }
-        if let Err(e) = write_slot(app, USERNAME_LLM_PROVIDER_ACTIVE, "deepseek") {
-            eprintln!("[prism] migration write to llm-provider:active failed: {e}");
-            return None;
-        }
-        if let Err(e) = delete_slot(app, USERNAME_DEEPSEEK_LEGACY) {
-            // Non-fatal — the legacy entry is now duplicated at worst.
-            eprintln!("[prism] migration delete of {USERNAME_DEEPSEEK_LEGACY} failed: {e}");
-        }
-        return Some("deepseek".to_string());
-    }
-
-    None
+    keystore::read_active_provider(app)
 }
 
-/// Write the active provider id. Empty strings are rejected.
+/// Write the active provider id. Empty strings and unknown ids are
+/// rejected.
 pub fn write_active_provider<R: Runtime>(
     app: &tauri::AppHandle<R>,
     provider: &str,
 ) -> Result<(), String> {
-    if provider.is_empty() {
-        return Err("provider cannot be empty".to_string());
-    }
-    write_slot(app, USERNAME_LLM_PROVIDER_ACTIVE, provider)
+    keystore::write_active_provider(app, provider)
 }
 
 // ---------------------------------------------------------------------------
