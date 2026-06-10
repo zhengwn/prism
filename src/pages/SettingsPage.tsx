@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Trans } from "react-i18next";
+import { invoke } from "@tauri-apps/api/core";
 import { api, SIDECAR_BASE } from "@/lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +22,8 @@ import {
   Loader2,
   Check,
   AlertCircle,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
 import type { Theme } from "@/lib/theme";
@@ -256,6 +259,28 @@ function AiSection() {
   // path falls back to a default provider in that window so the UI never
   // shows a blank dropdown.
   const [selectedProvider, setSelectedProvider] = useState<ProviderId | null>(null);
+  // API key input has three visual modes:
+  //   "hidden"   — a key is on disk but the eye is closed. The field
+  //                shows a length-matched dot mask (one `•` per char
+  //                of the real key, derived from `llmConfig.keyLength`)
+  //                so the input width tracks the actual secret instead
+  //                of a fixed 8-dot placeholder. Plaintext is NOT in
+  //                renderer state — the only way to get the real value
+  //                is the eye toggle, which calls `reveal_llm_key` on
+  //                demand.
+  //   "revealed" — the user explicitly opened the eye; the field shows
+  //                the full key (type=text). Read-only so the user
+  //                can't accidentally edit it. Closing the eye clears
+  //                the value from React state immediately.
+  //   "editing"  — the user is typing a new key (or there is no key on
+  //                disk). Empty field, password-masked, normal edit.
+  // We default to "editing" so the field has predictable behaviour
+  // before `llmConfig` resolves; the first render after hydration may
+  // flip us into "hidden" if the active provider already has a key.
+  const [apiKeyMode, setApiKeyMode] = useState<"hidden" | "revealed" | "editing">("editing");
+  // The plaintext key, only populated while the eye is open or the
+  // user is mid-typing. Never derived from `llmConfig` (that never
+  // carries the key — only `configured` and `keyLast4`).
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -271,6 +296,16 @@ function AiSection() {
       setSelectedProvider(llmConfig.provider);
       setModel(llmConfig.model ?? "");
       setBaseUrl(llmConfig.baseUrl ?? "");
+      // If the active provider already has a key on disk, land in
+      // "hidden" so the placeholder dots appear — the user knows a key
+      // is there but the plaintext isn't sitting in React state until
+      // they click the eye.
+      if (llmConfig.configured) {
+        setApiKeyMode("hidden");
+        setApiKey("");
+      } else {
+        setApiKeyMode("editing");
+      }
     }
   }, [llmConfig, selectedProvider]);
 
@@ -284,10 +319,53 @@ function AiSection() {
     if (llmConfig && llmConfig.provider === next) {
       setModel(llmConfig.model ?? "");
       setBaseUrl(llmConfig.baseUrl ?? "");
+      setApiKeyMode(llmConfig.configured ? "hidden" : "editing");
     } else {
       const schema = schemas?.find((s) => s.id === next);
       setModel(schema?.defaultModel ?? "");
       setBaseUrl("");
+      setApiKeyMode("editing");
+    }
+  };
+
+  // Eye toggle: pulls the key from the Tauri command only when the
+  // user explicitly opens the eye. Closing the eye wipes the value
+  // from renderer state so the secret stops living in the React tree.
+  const [revealPending, setRevealPending] = useState(false);
+  const onToggleReveal = async () => {
+    if (apiKeyMode === "revealed") {
+      // Was visible — collapse back to hidden and drop the plaintext.
+      setApiKey("");
+      setApiKeyMode("hidden");
+      return;
+    }
+    // Was hidden or editing. Need a key on disk to reveal — if there
+    // isn't one, flip into editing instead so the user can type a
+    // brand-new one without confusion.
+    if (!llmConfig?.configured || !selectedProvider) {
+      setApiKeyMode("editing");
+      setApiKey("");
+      return;
+    }
+    setRevealPending(true);
+    try {
+      const full = await invoke<string | null>("reveal_llm_key", {
+        provider: selectedProvider,
+      });
+      if (full != null) {
+        setApiKey(full);
+        setApiKeyMode("revealed");
+      } else {
+        // Keystore lost the key between config-fetch and reveal-call
+        // (rare — file deleted out from under us). Fall back to
+        // editing so the user can re-enter.
+        setApiKeyMode("editing");
+      }
+    } catch (e) {
+      console.error("[prism] reveal_llm_key failed:", e);
+      setApiKeyMode("editing");
+    } finally {
+      setRevealPending(false);
     }
   };
 
@@ -304,24 +382,41 @@ function AiSection() {
   // key-required. The model field is inline (no "Advanced" disclosure)
   // because both providers are the same shape — a disclosure adds no
   // value when there's nothing to hide.
-  const showApiKey = requiresKey;
+  const showApiKeyField = requiresKey;
 
-  const apiKeyPlaceholderKey = (() => {
-    switch (activeProvider) {
-      case "minimax":
-        return "settings.provider.apiKeyPlaceholderMinimax";
-      case "deepseek":
-      default:
-        return "settings.provider.apiKeyPlaceholderDeepseek";
-    }
-  })();
+  // Placeholder is provider-specific ("sk-…" for DeepSeek, "ey…" for
+  // MiniMax) when no key is configured, and a friendly "saved" hint
+  // once a key is in the keystore so the user knows they don't need to
+  // re-type it unless they want to rotate. Resolved lazily via a
+  // function (not a const) because the underlying `configured` flag
+  // arrives later in the render via `llmConfig`.
+  const apiKeyPlaceholder = (isConfigured: boolean) =>
+    isConfigured
+      ? t("settings.provider.apiKeyPlaceholderSaved")
+      : t(
+          (activeProvider === "minimax"
+            ? "settings.provider.apiKeyPlaceholderMinimax"
+            : "settings.provider.apiKeyPlaceholderDeepseek") as any,
+        );
+
+  // Length-matched password mask. We render `keyLength` bullet chars
+  // (one per character of the real key) so the field width tracks the
+  // actual secret — short keys don't stretch the input, long keys
+  // don't get truncated. Falls back to a short placeholder if the
+  // keystore hasn't told us the length yet (race between the first
+  // `get_llm_config` reply and the first render).
+  const HIDDEN_KEY_MASK_FALLBACK = "••••••••";
+  const hiddenKeyMask =
+    typeof llmConfig?.keyLength === "number" && llmConfig.keyLength > 0
+      ? "•".repeat(llmConfig.keyLength)
+      : HIDDEN_KEY_MASK_FALLBACK;
 
   const saveMut = useMutation({
     mutationFn: () => {
       if (!selectedProvider) throw new Error("No provider selected");
       const update: LlmConfigUpdate = { provider: selectedProvider };
 
-      if (showApiKey) {
+      if (showApiKeyField) {
         if (clearKey) {
           // Explicit clear — empty string signals "wipe this slot" to
           // both the Tauri command and the HTTP endpoint.
@@ -340,11 +435,16 @@ function AiSection() {
       }
       return api.setLlmConfig(update);
     },
-    onSuccess: () => {
+    onSuccess: (resp) => {
       qc.invalidateQueries({ queryKey: ["llmConfig"] });
       setFeedback({ kind: "success", text: t("settings.provider.saveSuccess") });
       setApiKey("");
       setClearKey(false);
+      // After a save, drop back into "hidden" so the freshly written
+      // key is masked again. The user can re-reveal explicitly via the
+      // eye toggle. Landing in "revealed" would leave the plaintext
+      // sitting in renderer state until the user does something.
+      setApiKeyMode(resp.configured ? "hidden" : "editing");
       window.setTimeout(() => setFeedback(null), 3_000);
     },
     onError: (e) => {
@@ -434,7 +534,7 @@ function AiSection() {
         </div>
 
         {/* API key (both providers are key-required) */}
-        {showApiKey && (
+        {showApiKeyField && (
           <div className="space-y-1.5">
             <label
               htmlFor="provider-api-key"
@@ -446,18 +546,64 @@ function AiSection() {
               <Input
                 id="provider-api-key"
                 data-testid="provider-api-key"
-                type="password"
-                value={apiKey}
+                // Two-state visibility: hidden → type=password + a
+                // length-matched dot mask (plaintext is NOT in renderer
+                // state); revealed → type=text + real key. Editing is
+                // the third mode (password + whatever the user typed).
+                type={apiKeyMode === "revealed" ? "text" : "password"}
+                value={
+                  apiKeyMode === "hidden"
+                    ? hiddenKeyMask
+                    : apiKey
+                }
+                readOnly={apiKeyMode === "revealed" || apiKeyMode === "hidden"}
+                onFocus={() => {
+                  // Focusing into "hidden" while a key is on disk should
+                  // land in editing — typing replaces the existing key.
+                  // Don't auto-reveal on focus (privacy: shoulder
+                  // surfing / focus-stomping).
+                  if (apiKeyMode === "hidden") {
+                    setApiKeyMode("editing");
+                    setApiKey("");
+                    setClearKey(false);
+                  }
+                }}
                 onChange={(e) => {
                   setApiKey(e.target.value);
                   if (clearKey) setClearKey(false);
                 }}
-                placeholder={t(apiKeyPlaceholderKey as any)}
+                placeholder={
+                  apiKeyMode === "editing"
+                    ? apiKeyPlaceholder(llmConfig?.configured ?? false)
+                    : ""
+                }
                 disabled={saveMut.isPending}
                 autoComplete="off"
                 spellCheck={false}
-                className="flex-1"
+                className={cn(
+                  "flex-1",
+                  apiKeyMode === "hidden" && "font-mono tracking-widest",
+                  apiKeyMode === "revealed" && "font-mono",
+                )}
               />
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                onClick={onToggleReveal}
+                disabled={saveMut.isPending || revealPending}
+                aria-label={t(apiKeyMode === "revealed" ? "settings.provider.hideApiKey" : "settings.provider.showApiKey")}
+                title={t(apiKeyMode === "revealed" ? "settings.provider.hideApiKey" : "settings.provider.showApiKey")}
+                data-testid="provider-toggle-key"
+              >
+                {revealPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : apiKeyMode === "revealed" ? (
+                  <EyeOff className="h-4 w-4" />
+                ) : (
+                  <Eye className="h-4 w-4" />
+                )}
+              </Button>
               <Button
                 type="button"
                 size="sm"
@@ -465,6 +611,11 @@ function AiSection() {
                 onClick={() => {
                   setApiKey("");
                   setClearKey(true);
+                  // Wipe is a destructive break-glass — drop out of
+                  // hidden/revealed mode so the empty value renders
+                  // unambiguously as "empty", not as the mask or the
+                  // exposed plaintext.
+                  setApiKeyMode("editing");
                 }}
                 disabled={saveMut.isPending}
                 data-testid="provider-clear-key"
@@ -473,7 +624,9 @@ function AiSection() {
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">
-              {t("settings.apiKeyDescription")}
+              {(llmConfig?.configured ?? false)
+                ? t("settings.apiKeyDescriptionConfigured")
+                : t("settings.apiKeyDescription")}
             </p>
           </div>
         )}

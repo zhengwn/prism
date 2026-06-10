@@ -215,6 +215,15 @@ pub fn key_last4<R: Runtime>(
     key_last4_at(&keystore_root(), provider)
 }
 
+/// Length of the stored API key in characters, for the Settings UI
+/// length-matched password mask. Returns `None` for empty / unset keys.
+pub fn key_length<R: Runtime>(
+    _app: &tauri::AppHandle<R>,
+    provider: &str,
+) -> Option<usize> {
+    key_length_at(&keystore_root(), provider)
+}
+
 /// Read the MiniMax custom config (base_url + model).
 pub fn read_custom_config<R: Runtime>(
     _app: &tauri::AppHandle<R>,
@@ -485,6 +494,20 @@ pub fn key_last4_at(root: &Path, provider: &str) -> Option<String> {
     }
     let start = key.chars().count().saturating_sub(4);
     Some(key.chars().skip(start).collect())
+}
+
+/// Length of the stored API key in characters (not bytes). Returns
+/// `None` if no key is set or decryption failed. Used by the Settings
+/// UI to render a length-matched mask (`•` × `keyLength` + last4)
+/// instead of a fixed 8-dot placeholder, so the input width matches
+/// the actual secret and the field doesn't visually "shrink" when the
+/// key is hidden.
+pub fn key_length_at(root: &Path, provider: &str) -> Option<usize> {
+    let key = read_llm_key_at(root, provider)?;
+    if key.is_empty() {
+        return None;
+    }
+    Some(key.chars().count())
 }
 
 pub fn read_custom_config_at(root: &Path) -> Option<CustomLlmConfig> {

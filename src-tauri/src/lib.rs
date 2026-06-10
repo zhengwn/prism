@@ -47,6 +47,7 @@ pub fn run() {
             // v0.2a-providers multi-provider config
             secrets::get_provider_schema,
             secrets::get_llm_config,
+            secrets::reveal_llm_key,
             sidecar::set_llm_config,
         ])
         .build(tauri::generate_context!())

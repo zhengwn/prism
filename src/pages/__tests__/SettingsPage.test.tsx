@@ -75,6 +75,10 @@ const FAKE_SCHEMAS: ProviderSchema[] = [
 const FAKE_LLM_CONFIG: LlmConfig = {
   provider: "deepseek",
   configured: true,
+  // Simulate the trailing-4 + length surface the Tauri sidecar ships:
+  // real builds populate both together from the keystore decrypt.
+  keyLast4: "1dh4",
+  keyLength: 35,
   model: "deepseek-v4-pro",
 };
 

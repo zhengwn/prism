@@ -120,11 +120,31 @@ pub fn is_known_provider(p: &str) -> bool {
 /// `base_url` — Tauri's IPC layer deserialises the request and re-serialises
 /// the response using serde, and the frontend payload convention is camelCase
 /// (matches the `LlmConfig` TS type in `src/types/index.ts`).
+///
+/// `key_last4` is the trailing 4 chars of the active key (when present)
+/// — the Settings UI renders it as `••••xxxx` inside the password field
+/// so the user can see which key is on disk without exposing the value
+/// itself. The eye toggle still flips to `type="text"` which would
+/// surface the full masked string; the field stays `readOnly` in that
+/// mode so the user has to explicitly click "edit" (or focus the
+/// input) before they can type a replacement.
+///
+/// `key_length` is the total character count of the stored key (when
+/// present) — the Settings UI uses it to render a length-matched
+/// password mask (`•` × `keyLength` + `keyLast4`) so the field width
+/// tracks the real secret. Exposing the length is safe: it carries no
+/// information about the key's contents, and the field is already
+/// `type="password"` so the mask is rendered by the browser as dots
+/// regardless. Returns `None` when no key is set.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmConfigResponse {
     pub provider: String,
     pub configured: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_last4: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_length: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -217,6 +237,13 @@ pub fn delete_llm_key<R: Runtime>(
 /// "••••abcd" rendering. Returns `None` if no key is set.
 pub fn key_last4<R: Runtime>(app: &tauri::AppHandle<R>, provider: &str) -> Option<String> {
     keystore::key_last4(app, provider)
+}
+
+/// Length of the stored API key (in characters). Used by the Settings UI
+/// to render a length-matched password mask so the field width tracks the
+/// real secret. Returns `None` if no key is set or decryption failed.
+pub fn key_length<R: Runtime>(app: &tauri::AppHandle<R>, provider: &str) -> Option<usize> {
+    keystore::key_length(app, provider)
 }
 
 /// Read the stored `custom` provider config (base_url + model).
@@ -341,6 +368,20 @@ pub fn build_llm_config_response<R: Runtime>(app: &tauri::AppHandle<R>) -> LlmCo
     // key — `configured` is just "is the keychain slot populated?".
     let configured = read_llm_key(app, &provider).is_some();
 
+    // Surface the trailing 4 chars of the key so the Settings UI can
+    // render `••••xxxx` and the user knows which key is on disk
+    // without ever exposing the secret value itself. `None` when the
+    // slot is empty (or decryption failed) — UI falls back to an
+    // empty / placeholder state.
+    let key_last4 = key_last4(app, &provider);
+
+    // Also surface the key length so the password input can render
+    // a length-matched mask (one dot per character of the real key)
+    // instead of a fixed placeholder. Same secret-safety story as
+    // `keyLast4`: a length is non-sensitive, and the field is
+    // `type="password"` so the mask is rendered as bullets either way.
+    let key_length = key_length(app, &provider);
+
     let model = default_model_for(&provider).map(|s| s.to_string());
 
     // Only MiniMax exposes a user-overridable base_url (its OpenAI-
@@ -354,6 +395,8 @@ pub fn build_llm_config_response<R: Runtime>(app: &tauri::AppHandle<R>) -> LlmCo
     LlmConfigResponse {
         provider,
         configured,
+        key_last4,
+        key_length,
         model,
         base_url,
     }
@@ -387,4 +430,23 @@ pub fn get_provider_schema() -> Vec<ProviderSchema> {
             fields: vec!["api_key".to_string()],
         },
     ]
+}
+
+/// Return the active provider's full API key (decrypted from the
+/// keystore). The frontend only calls this when the user explicitly
+/// clicks the "show" eye toggle — the key never crosses the IPC
+/// boundary otherwise.
+///
+/// SECURITY: this command hands a plaintext secret to the renderer.
+/// That's acceptable in this threat model because:
+///   * The Settings window is a Tauri-controlled webview, not a
+///     browser tab; no third-party JS can run there.
+///   * The renderer is expected to drop the value as soon as the user
+///     hides the field again (it doesn't have to, but anything else
+///     would leak through the React DevTools / a console paste).
+///   * `get_llm_config` (the routine read path) still returns only
+///     `configured: boolean` + `keyLast4` — the eye toggle is opt-in.
+#[tauri::command]
+pub fn reveal_llm_key(app: tauri::AppHandle, provider: String) -> Option<String> {
+    read_llm_key(&app, &provider)
 }
