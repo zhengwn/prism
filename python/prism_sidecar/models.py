@@ -46,6 +46,10 @@ class SourceKind(str, Enum):
     x = "x"
     pdf = "pdf"
     file = "file"
+    # v0.2c+: B 站视频源。B 站字幕通常 1-2 万字，需要专用 distiller
+    # prompt（章节切分 + 关键段选取 + CC/AI 字幕合并），见
+    # ``distillers/bilibili_prompt.py``。
+    bilibili = "bilibili"
 
 
 class ItemStatus(str, Enum):
