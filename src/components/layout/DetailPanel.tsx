@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { X, ExternalLink, Sparkles, Hash } from "lucide-react";
+import { X, ExternalLink, Sparkles, Hash, PlayCircle } from "lucide-react";
 import { usePrismStore } from "@/store";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
@@ -146,6 +146,28 @@ export function DetailPanel() {
             </>
           ) : item ? (
             <>
+              {/* Bilibili video — embedded player (v0.2c).
+                  We detect a B station item two ways:
+                    1. `item.bvid` is set (preferred — the sidecar
+                       stores it on the item when the source is
+                       a `kind: "bilibili"` source). This is the
+                       forward path and lets us embed the official
+                       player iframe.
+                    2. `item.url` contains "bilibili.com" — covers
+                       legacy items ingested before `bvid` was
+                       added, and URLs that point at the canonical
+                       watch page.
+                  When the item is B station but `bvid` is missing,
+                  we fall back to a "open on Bilibili" link so the
+                  user can still watch it; the iframe can't render
+                  without a BV id. */}
+              {isBilibiliItem(item) && (
+                <BilibiliPlayer
+                  bvid={item.bvid ?? extractBvidFromUrl(item.url)}
+                  title={localized?.title ?? item.title}
+                />
+              )}
+
               {/* Summary — rendered as 1+ paragraphs (the LLM
                   sometimes breaks with blank lines) and with
                   **bold** markers promoted to <strong> via the
@@ -282,16 +304,29 @@ export function DetailPanel() {
 
       {/* Footer */}
       {item && (
-        <div className="border-t p-3">
+        <div className="space-y-2 border-t p-3">
           <a
             href={item.url}
             target="_blank"
             rel="noreferrer"
             className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-input bg-background px-3 text-xs font-medium hover:bg-accent hover:text-accent-foreground"
+            data-testid="detail-open-original"
           >
             <ExternalLink className="h-3.5 w-3.5" />
             {t("detail.openOriginal")}
           </a>
+          {isBilibiliItem(item) && (
+            <a
+              href={item.url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-pink-500/40 bg-pink-500/10 px-3 text-xs font-medium text-pink-700 hover:bg-pink-500/20 dark:text-pink-300"
+              data-testid="detail-open-bilibili"
+            >
+              <PlayCircle className="h-3.5 w-3.5" />
+              {t("inbox.openOnBilibili")}
+            </a>
+          )}
         </div>
       )}
     </aside>
@@ -322,5 +357,76 @@ function LangPill({
     >
       {label}
     </button>
+  );
+}
+
+// ----- Bilibili helpers & player ------------------------------------------
+
+/**
+ * Heuristic: an item is "B station" if either the structured `bvid`
+ * field is set OR the URL points at bilibili.com. The former is
+ * authoritative; the latter is a safety net for legacy items ingested
+ * before the sidecar started stamping `bvid` on the row.
+ */
+function isBilibiliItem(item: KnowledgeItem): boolean {
+  if (item.bvid) return true;
+  return /bilibili\.com/i.test(item.url ?? "");
+}
+
+/**
+ * Pull a BV id out of a bilibili.com URL. Returns undefined when
+ * no BV id is found (the URL might be a mid page or a search
+ * page — in that case the iframe can't render anyway, so the
+ * detail panel degrades to the "open on Bilibili" link).
+ */
+function extractBvidFromUrl(url: string): string | undefined {
+  const m = url?.match(/BV[0-9A-Za-z]{8,}/i);
+  return m ? m[0] : undefined;
+}
+
+/**
+ * Embed the official Bilibili player iframe. The player URL is
+ * `https://player.bilibili.com/player.html?bvid=<id>&autoplay=0`
+ * — autoplay is off because the user already chose this item by
+ * clicking it; auto-playing audio would be obnoxious in a panel
+ * next to the inbox list.
+ *
+ * When `bvid` is missing we render a fallback card explaining
+ * why the embed is absent and offering the "open on Bilibili"
+ * link in the footer as a substitute.
+ */
+function BilibiliPlayer({ bvid, title }: { bvid?: string; title: string }) {
+  const { t } = useLanguage();
+  if (!bvid) {
+    return (
+      <section
+        className="rounded-md border border-dashed border-pink-500/30 bg-pink-500/5 p-3 text-xs text-pink-700 dark:text-pink-300"
+        data-testid="detail-bilibili-missing"
+      >
+        {t("inbox.bilibiliSourceMissing")}
+      </section>
+    );
+  }
+  const src = `https://player.bilibili.com/player.html?bvid=${encodeURIComponent(bvid)}&autoplay=0`;
+  return (
+    <section
+      className="space-y-1.5"
+      data-testid="detail-bilibili-player"
+    >
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        {t("inbox.bilibiliPlayer")}
+      </h3>
+      <div className="relative aspect-video w-full overflow-hidden rounded-md border border-pink-500/30 bg-black">
+        <iframe
+          src={src}
+          title={`Bilibili player — ${title}`}
+          allowFullScreen
+          scrolling="no"
+          frameBorder="0"
+          sandbox="allow-top-navigation allow-same-origin allow-forms allow-scripts allow-popups"
+          className="absolute inset-0 h-full w-full"
+        />
+      </div>
+    </section>
   );
 }

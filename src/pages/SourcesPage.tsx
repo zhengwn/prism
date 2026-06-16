@@ -19,9 +19,35 @@ const kindIcon: Record<SourceKind, string> = {
   x: "✕",
   pdf: "📄",
   file: "📁",
+  bilibili: "📺",
 };
 
-const KIND_OPTIONS: SourceKind[] = ["rss", "blog", "youtube", "podcast", "x", "pdf", "file"];
+const KIND_OPTIONS: SourceKind[] = [
+  "rss",
+  "blog",
+  "youtube",
+  "podcast",
+  "x",
+  "pdf",
+  "file",
+  "bilibili",
+];
+
+/**
+ * Strip a `BVxxxxxxxxxx` token out of a URL or a bare id. B station
+ * source urls come in three flavours (mid page, BV url, bare BV id)
+ * — for the badge on the card we just want a stable token we can
+ * truncate for display.
+ */
+function bilibiliHint(url: string): string | null {
+  if (!url) return null;
+  const bv = url.match(/BV[0-9A-Za-z]{8,}/i);
+  if (bv) return bv[0];
+  // mid page: https://space.bilibili.com/339137722
+  const mid = url.match(/space\.bilibili\.com\/(\d+)/i);
+  if (mid) return `mid ${mid[1]}`;
+  return null;
+}
 
 export function SourcesPage() {
   const { data: sources, isLoading } = useQuery({
@@ -129,6 +155,19 @@ function SourceCard({
           <Badge variant={source.enabled ? "default" : "secondary"}>
             {source.enabled ? t("sources.active") : t("sources.paused")}
           </Badge>
+          {source.kind === "bilibili" && (
+            <Badge
+              variant="outline"
+              className="ml-1 gap-0.5 border-pink-500/40 bg-pink-500/10 text-[10px] text-pink-700 dark:text-pink-300"
+              data-testid="source-bilibili-badge"
+            >
+              {t("sources.addDialog.badgeBilibili")}
+              {(() => {
+                const hint = source.bvid ?? bilibiliHint(source.url);
+                return hint ? <span className="ml-1 opacity-70">· {hint}</span> : null;
+              })()}
+            </Badge>
+          )}
         </div>
       </CardHeader>
       <CardContent className="pt-0">
@@ -182,8 +221,32 @@ function AddSourceDialog({
   const [url, setUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  // B station sources can be added either as a UP 主 mid page
+  // (https://space.bilibili.com/<mid>) or a single BV url
+  // (https://www.bilibili.com/video/<bvid>) or a bare BV id.
+  // We accept all three forms; the sidecar parses out the id.
+  const urlPlaceholder =
+    kind === "bilibili"
+      ? t("sources.addDialog.urlPlaceholderBilibili")
+      : t("sources.addDialog.urlPlaceholder");
+
   const createMut = useMutation({
-    mutationFn: () => api.createSource({ name, kind, url, enabled: true }),
+    mutationFn: () => {
+      // Extract a BV id from the URL if the user pasted one. The
+      // sidecar stores both `bvid` and the original URL inside
+      // `Source.config_json`; the top-level `bvid` is surfaced on
+      // read so the detail panel can embed the player without an
+      // extra round-trip. For non-bilibili kinds we just pass
+      // through unchanged.
+      const bvid = kind === "bilibili" ? bilibiliHint(url) ?? undefined : undefined;
+      return api.createSource({
+        name,
+        kind,
+        url,
+        enabled: true,
+        ...(bvid ? { bvid } : {}),
+      });
+    },
     onSuccess: () => {
       setName("");
       setUrl("");
@@ -259,7 +322,11 @@ function AddSourceDialog({
                 autoFocus
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder={t("sources.addDialog.namePlaceholder")}
+                placeholder={
+                  kind === "bilibili"
+                    ? t("sources.addDialog.bilibiliPlaceholder")
+                    : t("sources.addDialog.namePlaceholder")
+                }
                 disabled={createMut.isPending}
                 data-testid="add-source-name"
               />
@@ -295,7 +362,7 @@ function AddSourceDialog({
                 id="source-url"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder={t("sources.addDialog.urlPlaceholder")}
+                placeholder={urlPlaceholder}
                 disabled={createMut.isPending}
                 data-testid="add-source-url"
               />
@@ -337,6 +404,7 @@ function kindLabel(k: SourceKind, t: (key: string) => string): string {
     x: t("sources.addDialog.kindX"),
     pdf: t("sources.addDialog.kindPdf"),
     file: t("sources.addDialog.kindFile"),
+    bilibili: t("sources.addDialog.kindBilibili"),
   };
   return map[k];
 }

@@ -76,4 +76,69 @@ describe("SourcesPage — Add Source dialog", () => {
       });
     });
   });
+
+  it("lists Bilibili as a kind option in the Add Source dialog", async () => {
+    renderWithQuery(<SourcesPage />);
+    fireEvent.click(await screen.findByTestId("add-source-button"));
+    const select = await screen.findByTestId("add-source-kind") as HTMLSelectElement;
+    const optionValues = Array.from(select.options).map((o) => o.value);
+    expect(optionValues).toContain("bilibili");
+  });
+
+  it("submits a Bilibili source with extracted bvid when kind=Bilibili", async () => {
+    const created: Source = {
+      id: "src-bili",
+      name: "智东西",
+      kind: "bilibili",
+      url: "https://www.bilibili.com/video/BV1xx411c7mD",
+      enabled: true,
+      itemCount: 0,
+      bvid: "BV1xx411c7mD",
+    };
+    vi.mocked(api.api.createSource).mockResolvedValue(created);
+
+    renderWithQuery(<SourcesPage />);
+    fireEvent.click(await screen.findByTestId("add-source-button"));
+
+    const select = await screen.findByTestId("add-source-kind") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "bilibili" } });
+
+    const nameInput = screen.getByTestId("add-source-name");
+    const urlInput = screen.getByTestId("add-source-url");
+    const submit = screen.getByTestId("add-source-submit");
+
+    fireEvent.change(nameInput, { target: { value: "智东西" } });
+    fireEvent.change(urlInput, {
+      target: { value: "https://www.bilibili.com/video/BV1xx411c7mD" },
+    });
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(api.api.createSource).toHaveBeenCalledWith({
+        name: "智东西",
+        kind: "bilibili",
+        url: "https://www.bilibili.com/video/BV1xx411c7mD",
+        enabled: true,
+        bvid: "BV1xx411c7mD",
+      });
+    });
+  });
+
+  it("renders a Bilibili type badge for an existing B station source", async () => {
+    const bili: Source = {
+      id: "src-bili",
+      name: "机器之心",
+      kind: "bilibili",
+      url: "https://www.bilibili.com/video/BV1abc2345de",
+      enabled: true,
+      itemCount: 12,
+      bvid: "BV1abc2345de",
+    };
+    vi.mocked(api.api.listSources).mockResolvedValue([bili]);
+
+    renderWithQuery(<SourcesPage />);
+    const badge = await screen.findByTestId("source-bilibili-badge");
+    expect(badge).toBeInTheDocument();
+    expect(badge.textContent).toMatch(/Bilibili|B站/);
+  });
 });

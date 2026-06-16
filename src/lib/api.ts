@@ -65,14 +65,29 @@ export const api = {
   // ----- Sources -----
   listSources: () => request<Source[]>("/api/sources"),
   getSource: (id: string) => request<Source>(`/api/sources/${id}`),
-  createSource: (data: Omit<Source, "id" | "itemCount" | "lastSyncedAt">) =>
+  /**
+   * Create a source. The base shape is `Omit<Source, ...server-set fields>`
+   * plus an optional `bvid` and an open-ended `config` bag — the sidecar
+   * stores `bvid` / `mid` inside `Source.config_json`, but the front-end
+   * surfaces a top-level `bvid` for read ergonomics.
+   *
+   * v0.2c (Bilibili): `kind: "bilibili"` is accepted by the sidecar as a
+   * valid source kind; the server routes it to `BilibiliFetcher`. The
+   * front-end only needs to pass the kind + a URL (BV id or mid page) +
+   * optional bvid and the sidecar handles the rest.
+   */
+  createSource: (
+    data: Omit<Source, "id" | "itemCount" | "lastSyncedAt"> & {
+      config?: Record<string, unknown>;
+    },
+  ) =>
     request<Source>("/api/sources", {
       method: "POST",
       body: JSON.stringify(data),
     }),
   patchSource: (
     id: string,
-    data: Partial<Pick<Source, "name" | "url" | "enabled">>,
+    data: Partial<Pick<Source, "name" | "url" | "enabled" | "bvid">>,
   ) =>
     request<Source>(`/api/sources/${id}`, {
       method: "PATCH",
