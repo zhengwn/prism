@@ -114,18 +114,21 @@ best-practice, so they live here rather than in agent memory.
 
 ## Testing instructions
 
-- **v0.2a 测试覆盖**（已实现）：
-  - **Python sidecar**：`cd python && uv run pytest -v` — 38 case（rss 5 / hn 3 / distiller 8 / store 8 / sync 5 / api 9）
-  - **React 组件**：`cd src && npx vitest run` — 7 case（Button / InboxPage Sync 按钮 / SourcesPage Add Source dialog）
+- **v0.2b 测试覆盖**（已实现，v0.2a 之后 +76 case）：
+  - **Python sidecar**：`cd python && uv run pytest -v` — 114 case（rss 5 / hn 3 / distiller 8 / store 8 / sync 5 / api 9 → v0.2b 新增 FTS5 14 + cancel 3 + smart-quote 解析等 38+）
+  - **React 组件**：`cd src && npx vitest run` — 32 case（v0.2a 7 + v0.2b 新增 inline-markdown 10 + InboxPage 改写 8 + Settings / Progress 7 等）
   - **Rust keystore**：`cd src-tauri && cargo test --test keystore_smoke` — 8 case（roundtrip / 0600 perms / 损坏容错 / 并发 / key_last4 / active-provider 校验 / 迁移幂等 / 真 macOS Keychain migration roundtrip）
   - **端到端**：`npm run smoke` — 启动 sidecar → 同步 → 验 items
-- **手动验证 v0.2a**：
+- **手动验证 v0.2b**：
   1. `npm run tauri:dev` 启动 Tauri 窗口
   2. Sidebar 显示 5 个种子源（HN + Simon + OpenAI + DeepMind + HF）
   3. 顶栏点「立即同步」按钮，触发 sync，验证 items 列表刷新
   4. SourcesPage 点 `+` 弹窗加一个新 RSS 源，验证列表更新
   5. SettingsPage 配置 DeepSeek API key（写入 `~/.prism/keystore.json` 加密存储），重启 app 后状态显示「已配置」
-- **v0.2b 起加：** Playwright for Tauri E2E（开 Tauri 窗口跑真实交互）
+  6. InboxPage 顶部搜索框输入中文 / 英文关键词，验证 FTS5 搜索 ~5ms 命中（v0.2b）
+  7. 蒸馏中点「取消」按钮，验证蓝色 toast + 进度条停止（v0.2b）
+  8. 同步中点 sync 按钮（此时变「取消」），验证下一个 source 边界停止（v0.2b）
+- **v0.2c 起加：** Playwright for Tauri E2E（开 Tauri 窗口跑真实交互）
 
 ## PR & commit conventions
 
@@ -156,10 +159,10 @@ best-practice, so they live here rather than in agent memory.
 - **One-shot keychain→keystore migration:** `keystore::migrate_from_keychain_if_needed`
   is called once in `lib.rs` setup, **before** the sidecar is spawned.
   Idempotent — once `~/.prism/keystore.json` exists, the migration is
-  a no-op. The first call on a v0.2a install triggers one macOS prompt
-  and then deletes the legacy keychain entries, so subsequent launches
-  are prompt-free.
-- **User data (sources, items) stays on disk locally** (`~/.prism/data.db`) — no telemetry in v0.2a
+  a no-op. The first call on a v0.2a-or-earlier install triggers one
+  macOS prompt and then deletes the legacy keychain entries, so
+  subsequent launches are prompt-free.
+- **User data (sources, items) stays on disk locally** (`~/.prism/data.db`) — no telemetry in v0.2b
 
 ## LLM provider architecture (v0.2a+)
 

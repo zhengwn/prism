@@ -1,6 +1,6 @@
 # Prism — Architecture
 
-> 截至 v0.2a。v0.3 之后会加 MCP server、sqlite-vec 语义搜索、Skill bundle 等。
+> 截至 v0.2b（v0.2a + v0.2b 基础设施重构 + UX 打磨）。v0.2c 起加多源补齐，v0.3 之后会加 MCP server、sqlite-vec 语义搜索、Skill bundle 等。
 
 ## 总览
 
@@ -64,7 +64,7 @@
 
 ## 数据流
 
-### 抓取 + 提炼（v0.2a，已实现）
+### 抓取 + 提炼（v0.2a 引入，v0.2b 完善）
 
 ```
 [Source]   → fetcher.fetch(source)  → RawItem[]
@@ -108,7 +108,7 @@
                                              → returns KnowledgeItem
 ```
 
-## API 契约（v0.2a）
+## API 契约（v0.2a 引入，v0.2b 扩展）
 
 ### Sources
 
@@ -117,7 +117,7 @@
 | GET | `/api/sources` | — | `Source[]` |
 | POST | `/api/sources` | `SourceCreate` | `Source` |
 | GET | `/api/sources/{id}` | — | `Source` |
-| **PATCH** | `/api/sources/{id}` | `SourcePatch` | `Source`（v0.2a 新增） |
+| **PATCH** | `/api/sources/{id}` | `SourcePatch` | `Source`（v0.2a 引入） |
 | DELETE | `/api/sources/{id}` | — | `{ok: true}` |
 
 ### Items
@@ -131,10 +131,19 @@
 
 | Method | Path | Returns | 备注 |
 |---|---|---|---|
-| POST | `/api/sync` | `SyncResult` | 全源；v0.2a 真跑（v0.1 是 no-op） |
+| POST | `/api/sync` | `SyncResult` | 全源；v0.2a 真跑（v0.1 是 no-op），v0.2b 异步化（`{jobId}` 立即返回） |
 | POST | `/api/sync/{source_id}` | `SyncResult` | 单源 |
-| GET | `/api/sync/{job_id}` | `SyncJob` | 查 job 状态 |
+| GET | `/api/sync/{job_id}` | `SyncJob` | 查 job 状态（`running` / `cancelled` / `success` / `error`） |
+| **POST** | **`/api/sync/{job_id}/cancel`** | `{ok: true}` | **v0.2b 新增**：per-source 边界检查点，长跑可中断 |
 | GET | `/api/sync/history?limit=10` | `SyncLog[]` | 历史 |
+
+### Distill（v0.2b 新增）
+
+| Method | Path | Returns | 备注 |
+|---|---|---|---|
+| GET | `/api/distill/status` | `DistillStatus` | 整体提炼进度（running / pending / done / error 计数） |
+| GET | `/api/distill/status/stream` | `text/event-stream` (SSE) | v0.2b 实时进度推送，前端 `useDistillProgress` hook 订阅 |
+| POST | `/api/distill/cancel` | `{ok: true}` | v0.2b 取消当前跑批（next item 边界停） |
 
 `SyncResult` 字段：`jobId, status, startedAt, finishedAt, sourcesTotal, sourcesDone, itemsNew, itemsDistilled, error`（camelCase 通过 `_CamelBase` 转换）。
 
@@ -179,7 +188,7 @@ interface KnowledgeItem {
 | 跨进程 | HTTP loopback | 简单、可调试 |
 | 双语存储 | 显式 `*_en` / `*_zh` 字段 | 保留搜索英文能力 + 切换语言可看原文 |
 
-## 目录结构（v0.2a）
+## 目录结构（v0.2b 当前）
 
 ```
 prism/
@@ -200,7 +209,7 @@ prism/
 │   │   ├── sidecar.rs        # Python 进程管理 + env 注入
 │   │   ├── secrets.rs        # 公开 IPC 命令 + 公开 helper 签名（薄封装，转发到 keystore）
 │   │   └── keystore.rs       # 本地 AES-256-GCM 加密文件存储 + 一次 keychain→keystore 迁移
-│   ├── capabilities/         # 权限（v0.2a+ 不再含 keyring）
+│   ├── capabilities/         # 权限（v0.2b 起不再含 keyring）
 │   ├── tests/keystore_smoke.rs  # 8 case：roundtrip / 0600 / 损坏容错 / 并发 / key_last4 / 迁移幂等 / 真 Keychain migration
 │   └── tests/llm_config_smoke.rs # 9 case：纯 helper + IPC serde camelCase 契约
 ├── python/                   # Python sidecar
@@ -293,10 +302,10 @@ CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT);  -- 迁移版本
 - **loopback only**：Python sidecar 只听 `127.0.0.1`，不暴露公网
 - **Tauri capabilities**：webview 默认不能调系统命令，必须显式 allow
 - **CSP**：dev 阶段关掉，prod 阶段收紧（v0.4）
-- **Secrets**：API key 存本地加密文件 `~/.prism/keystore.json`（v0.2a+ 替代 OS keychain，根除 macOS 启动期授权弹窗；**前端永远拿不到 key 值**，只能查 `{configured: bool}`）
+- **Secrets**：API key 存本地加密文件 `~/.prism/keystore.json`（v0.2b 起替代 OS keychain，根除 macOS 启动期授权弹窗；**前端永远拿不到 key 值**，只能查 `{configured: bool}`）
 - **CORS allowlist**：Tauri + Vite origins only
 - **sidecar env 注入**：Tauri 启动时从 keystore 读 key → `cmd.env("DEEPSEEK_API_KEY", key)` 注入子进程；key 不会出现在 settings 配置文件里
-- **一次 keychain→keystore 迁移**：v0.2a+ 在 `lib.rs` setup 钩子里调 `keystore::migrate_from_keychain_if_needed` —— 如果是 v0.2a 升上来，第一次会触发一次 macOS 授权弹窗并把 keychain 里的 key 转写到 keystore；之后 `delete_credential` 清掉 keychain entry，**永久免弹窗**
+- **一次 keychain→keystore 迁移**：v0.2b 在 `lib.rs` setup 钩子里调 `keystore::migrate_from_keychain_if_needed` —— v0.2a 及更早用户升上来时第一次会触发一次 macOS 授权弹窗并把 keychain 里的 key 转写到 keystore；之后 `delete_credential` 清掉 keychain entry，**永久免弹窗**
 
 ## 性能预算
 
@@ -306,14 +315,14 @@ CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT);  -- 迁移版本
 - 内存占用：< 300MB idle（vs Electron 500MB+）
 - 安装包大小：< 30MB（vs Electron 150MB+）
 
-## 测试覆盖（v0.2a）
+## 测试覆盖（v0.2b）
 
 | 层级 | 工具 | 覆盖 |
 |---|---|---|
-| Python fetcher/distiller/store/sync/api | pytest 38 case | rss 5 / hn 3 / distiller 8 / store 8 / sync 5 / api 9 |
+| Python fetcher/distiller/store/sync/api | pytest **114** case | rss 5 / hn 3 / distiller 8 / store 8 / sync 5 / api 9 / **FTS5 14** / **cancel 3** / smart-quote 解析等 |
 | Rust keystore | `cargo test --test keystore_smoke` | 8 case（roundtrip+密文无明文 / 0600 / 损坏容错 / 并发写 / key_last4 / active-provider 校验 / 迁移幂等 / 真 macOS Keychain migration roundtrip） |
 | Rust 公开 helper + IPC serde | `cargo test --test llm_config_smoke` | 9 case（username 格式 / is_known_provider / default_model / CustomLlmConfig JSON 形状 / IPC camelCase） |
-| React 关键组件 | Vitest 7 case | Button / InboxPage Sync 按钮 / SourcesPage Add Source dialog |
+| React 关键组件 | Vitest **32** case | Button / InboxPage Sync 按钮 / SourcesPage Add Source dialog / **inline-markdown 10** / **InboxPage 改写 8** / Settings 改写 / Progress hook 等 |
 | 端到端 | `bash scripts/smoke.sh` | 启动 sidecar → sync → 验 items |
 
-v0.2b 起加 Playwright E2E（开 Tauri 窗口跑真实交互）。
+v0.2c 起加 Playwright E2E（开 Tauri 窗口跑真实交互）。

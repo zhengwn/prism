@@ -5,15 +5,24 @@
 
 Prism 是一个 **AI 资讯聚合 + 知识提炼** 桌面应用，把分散在 RSS、YouTube、博客、播客等地方的内容，折射成可检索、可被 Agent 调用的结构化中文知识单元。
 
-跨平台：**Windows** + **macOS**。本地优先，LLM key 走 OS keychain。
+跨平台：**Windows** + **macOS**。本地优先，LLM key 走本地加密文件。
 
 ---
 
-## 当前状态：v0.2a
+## 当前状态：v0.2b
 
-**v0.2a 最小可用产品已交付**（2026-06）：SQLite 持久化、HN + RSS 真抓取、DeepSeek 中文提炼、后台调度、Tauri keychain 集成、前端 Sync 按钮 + 双语显示 + Add Source。
+**v0.2b 已交付**（2026-06-10）：v0.2a 之后的一轮基础设施重构 + UX 打磨——
 
-下次迭代（v0.2b）：YouTube/X/Podcast/arXiv 等其他源 + 全文搜索。
+- 密钥体系重写：Tauri 端用本地 AES-256-GCM keystore 替换 `tauri-plugin-keyring`，根除 macOS 启动期 keychain 授权弹窗
+- LLM 提炼：5 个 provider 精简为 2 个（DeepSeek + MiniMax）
+- 提炼体验：实时蒸馏进度（SSE 流）+ 取消按钮 + 进度条 / 取消 toast
+- 同步体验：sync 异步化 + 跑太久可中途取消（per-source 边界）
+- 搜索：InboxPage 走 SQLite FTS5 全文搜索（中文 prefix match + sanitizer 兜底）
+- 详情页：编号 / `#标签` / `**重点**` inline-markdown 渲染
+
+测试：114/114 pytest · 32/32 vitest · 8/8 Rust keystore smoke 绿。
+
+下次迭代（v0.2c）：YouTube / X / Podcast / arXiv 等多源补齐 + 错误重试 + Playwright E2E。
 
 详细规划见 [`docs/ROADMAP.md`](./docs/ROADMAP.md)。
 
@@ -21,10 +30,12 @@ Prism 是一个 **AI 资讯聚合 + 知识提炼** 桌面应用，把分散在 R
 
 ## 核心能力
 
-- 📡 **多源订阅** — HN Algolia、RSS、YouTube（v0.2b）、X（v0.2b）、播客（v0.2b）、博客、PDF、本地文件
+- 📡 **多源订阅** — HN Algolia、RSS、博客、PDF、本地文件（YouTube / X / Podcast / arXiv → v0.2c）
 - 🧠 **智能提炼** — LLM 把每条素材压成结构化中文知识单元（标题/摘要/关键点/标签），保留原文做双语索引
+- 🔍 **全文搜索** — SQLite FTS5，中文 prefix match，~5ms 命中（v0.2b）
+- ⚡ **实时进度 + 可取消** — 蒸馏 / 同步跑太久可中途取消，UI 不卡（v0.2b）
 - 🔌 **Agent 原生**（v0.3）— 暴露 Skill + MCP 接口，让 Claude Code / Cursor / OpenCode 等 Agent 直接读、写、订阅 Prism
-- 💻 **本地优先** — 数据全在本地 SQLite，API key 走 OS keychain，不上传云端
+- 💻 **本地优先** — 数据全在本地 SQLite，API key 走本地加密 keystore（`~/.prism/keystore.json`，AES-256-GCM），不上传云端
 
 ---
 
@@ -41,7 +52,7 @@ Prism 是一个 **AI 资讯聚合 + 知识提炼** 桌面应用，把分散在 R
 | 抓取 | **httpx + feedparser** | 异步 + 成熟 RSS 库 |
 | 提炼 | **litellm** | 一行切各家 LLM（默认 DeepSeek） |
 | 调度 | **APScheduler** | 进程内 cron，简单够用 |
-| 密钥 | **OS keychain (keyring)** | macOS Keychain / Windows Credential Manager |
+| 密钥 | **本地 AES-256-GCM keystore** | `~/.prism/keystore.json`，0600 perms，macOS 无启动期 keychain 弹窗（v0.2b） |
 | 包管理 | **uv** | 极快，取代 pip/poetry |
 
 ---
@@ -68,7 +79,7 @@ Dev 模式下：
 - Vite dev server: `http://localhost:1420`
 - Python sidecar: `http://127.0.0.1:8765`
 
-首次启动会自动从 fixtures 导入 5 个种子源（HN + 4 个 RSS），需要**手动配 DeepSeek API key**（Settings → AI 提炼 → Set Key，存到 OS keychain）。
+首次启动会自动从 fixtures 导入 5 个种子源（HN + 4 个 RSS），需要**手动配 DeepSeek API key**（Settings → AI 提炼 → Set Key，存到本地 `~/.prism/keystore.json` 加密文件）。
 
 ---
 
@@ -91,26 +102,30 @@ prism/
 ├── src-tauri/                # Tauri 2 Rust 壳
 │   ├── src/
 │   │   ├── main.rs           # 入口
-│   │   ├── lib.rs            # Builder + keyring plugin + RunEvent
+│   │   ├── lib.rs            # Builder + keystore + RunEvent
 │   │   ├── sidecar.rs        # Python 进程 spawn + env 注入 + 优雅关闭
-│   │   └── secrets.rs        # OS keychain 封装（get/set/clear API key）
+│   │   ├── secrets.rs        # 本地 keystore 封装（get/set/clear API key）
+│   │   └── keystore.rs       # AES-256-GCM 加解密 + keychain 一次性迁移（v0.2b）
 │   ├── capabilities/         # 权限配置
 │   └── icons/                # 应用图标
 ├── python/                   # Python sidecar
 │   ├── pyproject.toml        # uv 管理
 │   ├── prism_sidecar/
 │   │   ├── __main__.py       # CLI 入口
-│   │   ├── app.py            # FastAPI 路由
+│   │   ├── app.py            # FastAPI 路由（含 /api/sync/{jobId}/cancel）
 │   │   ├── models.py         # Pydantic v2（含双语 KnowledgeItem）
-│   │   ├── db.py             # aiosqlite + schema migration
+│   │   ├── db.py             # aiosqlite + schema migration（含 FTS5 v2）
+│   │   ├── fts5.py           # SQLite FTS5 全文搜索（v0.2b）
+│   │   ├── progress.py       # 提炼进度内存 store（v0.2b）
+│   │   ├── settings.py       # active provider R/W
 │   │   ├── store.py          # SQLite-backed CRUD
 │   │   ├── scheduler.py      # APScheduler 集成（每天 9am Asia/Shanghai）
 │   │   ├── config.py         # 读 env
 │   │   ├── fetchers/         # 多源抓取（base + rss + hackernews + registry）
-│   │   ├── distillers/       # LLM 提炼（base + deepseek via litellm）
-│   │   ├── pipeline/         # sync 编排
+│   │   ├── distillers/       # LLM 提炼（base + deepseek + minimax + registry）
+│   │   ├── pipeline/         # sync 编排（含 cancel 检查点）
 │   │   └── data/fixtures.py  # 5 个种子源
-│   └── tests/                # pytest 38 个 case
+│   └── tests/                # pytest 114 个 case
 ├── docs/                     # 设计文档
 │   ├── ROADMAP.md
 │   └── ARCHITECTURE.md
@@ -127,7 +142,8 @@ prism/
 
 - [x] **v0.1** — Hello Prism（Tauri + React + Python 假数据）
 - [x] **v0.2a** — 最小可用：SQLite + 真抓取 + DeepSeek 提炼 + 调度
-- [ ] **v0.2b** — 多源补齐（YouTube / X / Podcast / arXiv / 全文搜索）
+- [x] **v0.2b** — 基础设施重构 + UX 打磨（本地 keystore / 2 provider / 实时进度 / 可取消 / FTS5 / 详情 markdown）
+- [ ] **v0.2c** — 多源补齐（YouTube / X / Podcast / arXiv / 错误重试 / Playwright E2E）
 - [ ] **v0.3** — MCP server + Skill bundle（让 Agent 调 Prism）
 - [ ] **v0.4** — 跨平台打包（Windows MSI / macOS DMG / sidecar 打包）
 - [ ] **v0.5** — UX 完善（标签 / ⌘K / 通知）
@@ -153,8 +169,8 @@ npm run smoke
 # Python 测试
 cd python && uv run pytest -v
 
-# keychain roundtrip（v0.2a 起的真集成测试）
-cd src-tauri && cargo test --test keychain_smoke
+# keystore roundtrip（v0.2b 起的真集成测试，含 keychain 一次性迁移）
+cd src-tauri && cargo test --test keystore_smoke
 ```
 
 详细工程规范（i18n 强制、theme tokens、commit 规范、安全模型等）见 [`AGENTS.md`](./AGENTS.md)。
