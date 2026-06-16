@@ -46,6 +46,51 @@ SEED_SOURCES: list[dict] = [
             ],
         },
     },
+    # v0.2b PoC: 3 个 AI 资讯类 B 站 UP 主。
+    #
+    # mid 验证步骤 (2026-06-16): 用 `bilibili_api.search_by_type(
+    # keyword=<name>, search_type=SearchObjectType.USER)` 查到真实 mid,
+    # 再 cross-check fans 数确保是官方账号而非重名小号。
+    # 3 个 placeholder mid 在 task brief 里都错了 (mid=339137722 实际是
+    # 一个叫 kujdhxmqaw 的用户,跟 智东西 无关),现在的数字已经修。
+    #
+    # mid-to-name 速查:
+    #   * 智东西        (mid=31703119,  ~24k fans)  — 资讯整合向
+    #   * 机器之心官方  (mid=73414544,  ~90k fans)  — 资讯 + 论文
+    #   * PaperWeekly   (mid=368145665, ~33k fans)  — 论文解读
+    #
+    # 如果 B 站再换 mid 规则,这里手动改 3 个数字即可;
+    # 改不动的话 BilibiliFetcher 会优雅降级 (log 失败 + 返回空列表)。
+    {
+        "id": "src_bili_zhidongxi",
+        "name": "B站 · 智东西 (AI 资讯)",
+        "kind": SourceKind.bilibili.value,
+        "url": "https://space.bilibili.com/31703119",
+        "enabled": True,
+        "config_json": {
+            "mid": "31703119",
+        },
+    },
+    {
+        "id": "src_bili_jiqizhixin",
+        "name": "B站 · 机器之心 (AI 资讯 + 论文)",
+        "kind": SourceKind.bilibili.value,
+        "url": "https://space.bilibili.com/73414544",
+        "enabled": True,
+        "config_json": {
+            "mid": "73414544",
+        },
+    },
+    {
+        "id": "src_bili_paperweekly",
+        "name": "B站 · PaperWeekly (论文解读)",
+        "kind": SourceKind.bilibili.value,
+        "url": "https://space.bilibili.com/368145665",
+        "enabled": True,
+        "config_json": {
+            "mid": "368145665",
+        },
+    },
     {
         "id": "src_simon",
         "name": "Simon Willison's Weblog",

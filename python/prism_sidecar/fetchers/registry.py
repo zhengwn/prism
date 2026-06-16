@@ -8,12 +8,14 @@ HackerNewsFetcher directly. The default for `rss` is RSSFetcher.
 from __future__ import annotations
 
 from prism_sidecar.fetchers.base import Fetcher
+from prism_sidecar.fetchers.bilibili import BilibiliFetcher
 from prism_sidecar.fetchers.hackernews import HackerNewsFetcher
 from prism_sidecar.fetchers.rss import RSSFetcher
 from prism_sidecar.models import SourceKind
 
 _REGISTRY: dict[SourceKind, Fetcher] = {
     SourceKind.rss: RSSFetcher(),
+    SourceKind.bilibili: BilibiliFetcher(),
     # Other SourceKinds (youtube, podcast, blog, x, pdf, file) are not
     # implemented in v0.2a. The pipeline treats them as no-op and records
     # an error.

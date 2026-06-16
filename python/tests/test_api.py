@@ -93,9 +93,28 @@ async def test_sources_seeded_on_first_run(client):
     r = await client.get("/api/sources")
     assert r.status_code == 200
     sources = r.json()
-    assert len(sources) == 5
+    # v0.2b PoC: 5 RSS + 3 B 站 UP 主 = 8. The bilibili seeds must
+    # come back with kind=bilibili and configJson.mid populated.
+    assert len(sources) == 8
     ids = {s["id"] for s in sources}
-    assert {"src_hn", "src_simon", "src_openai", "src_anthropic", "src_huggingface"} <= ids
+    assert {
+        "src_hn", "src_simon", "src_openai", "src_anthropic", "src_huggingface",
+        "src_bili_zhidongxi", "src_bili_jiqizhixin", "src_bili_paperweekly",
+    } <= ids
+    # The 3 B 站 seeds must surface as bilibili kind + correct mid in config_json.
+    # Mid values are verified against B 站 search API on 2026-06-16
+    # (see fixtures.py for the verification command).
+    by_id = {s["id"]: s for s in sources}
+    for bid, expected_mid in [
+        ("src_bili_zhidongxi", "31703119"),
+        ("src_bili_jiqizhixin", "73414544"),
+        ("src_bili_paperweekly", "368145665"),
+    ]:
+        src = by_id[bid]
+        assert src["kind"] == "bilibili", f"{bid} kind={src['kind']!r}"
+        assert src["configJson"]["mid"] == expected_mid, (
+            f"{bid} mid={src['configJson'].get('mid')!r}"
+        )
 
 
 @pytest.mark.asyncio

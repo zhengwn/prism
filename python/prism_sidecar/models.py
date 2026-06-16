@@ -46,6 +46,12 @@ class SourceKind(str, Enum):
     x = "x"
     pdf = "pdf"
     file = "file"
+    # v0.2b PoC: B 站 UP 主投稿 / 单视频拉取。Per-source
+    # 标识 (mid / bvid / keyword) 存到 `config_json` 字段,
+    # 不需要新加 model 字段,也不动 db schema。
+    # 后续 v0.2c 全量接入 YouTube 时会复用 youtube 这个 kind,
+    # 所以 bilibili 是独立 kind,不会冲突。
+    bilibili = "bilibili"
 
 
 class ItemStatus(str, Enum):
