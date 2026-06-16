@@ -3,7 +3,7 @@
  * Keep these in sync with `python/prism_sidecar/models.py`.
  */
 
-export type SourceKind = "rss" | "youtube" | "podcast" | "blog" | "x" | "pdf" | "file";
+export type SourceKind = "rss" | "youtube" | "podcast" | "blog" | "x" | "pdf" | "file" | "bilibili";
 
 export interface Source {
   id: string;
@@ -13,6 +13,15 @@ export interface Source {
   enabled: boolean;
   lastSyncedAt?: string;
   itemCount: number;
+  /**
+   * Bilibili-specific extension: either a BV id (when the source
+   * is a single video) or a UP 主 mid (when the source is a
+   * user's submissions). v0.2c stores both `mid` and `bvid`
+   * inside `config_json` server-side, but the front-end surfaces
+   * the BV id at the item level so the DetailPanel can embed a
+   * player without an extra round-trip.
+   */
+  bvid?: string;
 }
 
 export type ItemStatus = "unread" | "read" | "archived" | "starred";
@@ -53,6 +62,12 @@ export interface KnowledgeItem {
   status: ItemStatus;
   durationSec?: number;
   contentType: "video" | "audio" | "article" | "paper" | "post";
+  /**
+   * Bilibili BV id. Present only when the item came from a
+   * `kind: "bilibili"` source. DetailPanel uses it to embed the
+   * official player iframe (`https://player.bilibili.com/player.html?bvid=...`).
+   */
+  bvid?: string;
 }
 
 export interface PrismHealth {
