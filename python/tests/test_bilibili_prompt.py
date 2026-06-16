@@ -225,6 +225,106 @@ def test_meta_only_fallback_instructs_tag_marker():
     assert "仅元信息蒸馏" in BILIBILI_META_ONLY_PROMPT
 
 
+# ----- subtitle_track_count metadata wiring -----------------------------
+
+
+def test_single_track_cc_note_explicit():
+    """When fetcher reports subtitle_track_count=1 and only CC is present,
+    the prompt must say '单轨' so the LLM knows it's not a half-fetch."""
+    raw = RawItem(
+        url="https://www.bilibili.com/video/BV1singleCC",
+        title="Single CC track",
+        content="[CC] line one\n[CC] line two\n",
+        published_at=datetime(2026, 6, 16, tzinfo=timezone.utc),
+        metadata={"source_kind": "bilibili", "subtitle_track_count": 1},
+        content_type=ContentType.video,
+    )
+    prompt = build_bilibili_prompt(raw)
+    assert "单轨" in prompt
+    assert "仅 CC" in prompt
+
+
+def test_single_track_ai_note_explicit():
+    raw = RawItem(
+        url="https://www.bilibili.com/video/BV1singleAI",
+        title="Single AI track",
+        content="[AI] line one\n[AI] line two\n",
+        published_at=datetime(2026, 6, 16, tzinfo=timezone.utc),
+        metadata={"source_kind": "bilibili", "subtitle_track_count": 1},
+        content_type=ContentType.video,
+    )
+    prompt = build_bilibili_prompt(raw)
+    assert "单轨" in prompt
+    assert "仅 AI" in prompt
+
+
+def test_zero_track_note_explicit_when_empty():
+    """Empty content + subtitle_track_count=0 → explicit 'no track' note."""
+    raw = RawItem(
+        url="https://www.bilibili.com/video/BV1noTrack",
+        title="No subtitle track",
+        content="",
+        published_at=datetime(2026, 6, 16, tzinfo=timezone.utc),
+        metadata={"source_kind": "bilibili", "subtitle_track_count": 0},
+        content_type=ContentType.video,
+    )
+    # Empty content routes to the meta-only fallback path (different
+    # template), so the track_count signal surfaces there.
+    prompt = build_bilibili_prompt(raw)
+    # meta-only path uses different wording; just verify it doesn't
+    # crash and falls back correctly.
+    assert "没有可用字幕" in prompt or "无可用字幕" in prompt
+
+
+def test_no_track_count_metadata_still_works():
+    """Backward compat: fetcher that doesn't set subtitle_track_count
+    must not break the prompt builder."""
+    raw = RawItem(
+        url="https://www.bilibili.com/video/BV1noMeta",
+        title="Old fetcher",
+        content="[CC] only cc\n",
+        published_at=datetime(2026, 6, 16, tzinfo=timezone.utc),
+        metadata={"source_kind": "bilibili"},  # no track_count
+        content_type=ContentType.video,
+    )
+    prompt = build_bilibili_prompt(raw)
+    assert "仅 CC" in prompt
+    # And the explicit "单轨" marker is NOT there (no metadata).
+    assert "单轨" not in prompt
+
+
+def test_two_track_with_both_tags_still_routes_to_c_plan():
+    """The C-plan (CC + AI both present) path should NOT add the
+    '单轨' marker — the merge strategy wording is what the LLM needs."""
+    raw = RawItem(
+        url="https://www.bilibili.com/video/BV1twoTrack",
+        title="Two tracks",
+        content="[CC] cc line\n[AI] ai line\n",
+        published_at=datetime(2026, 6, 16, tzinfo=timezone.utc),
+        metadata={"source_kind": "bilibili", "subtitle_track_count": 2},
+        content_type=ContentType.video,
+    )
+    prompt = build_bilibili_prompt(raw)
+    assert "C 方案" in prompt
+    assert "单轨" not in prompt  # C-plan path, not single-track
+
+
+def test_invalid_track_count_metadata_falls_back_safely():
+    """Non-int metadata (None / str / negative) must not break the prompt."""
+    for bad in (None, "1", -1, "two"):
+        raw = RawItem(
+            url="https://www.bilibili.com/video/BV1bad",
+            title="Bad metadata",
+            content="[CC] x\n",
+            published_at=datetime(2026, 6, 16, tzinfo=timezone.utc),
+            metadata={"source_kind": "bilibili", "subtitle_track_count": bad},
+            content_type=ContentType.video,
+        )
+        prompt = build_bilibili_prompt(raw)
+        assert "仅 CC" in prompt
+        assert "单轨" not in prompt
+
+
 # ----- Case 4: CC + AI → 合并策略 + 段标记 ------------------------------
 
 

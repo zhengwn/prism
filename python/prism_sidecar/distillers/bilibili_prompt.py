@@ -378,13 +378,32 @@ def _strip_all_prefixes(text: str) -> str:
     return "\n".join(out_lines)
 
 
-def _subtitle_source_note(analysis: SubtitleAnalysis) -> str:
+def _subtitle_source_note(
+    analysis: SubtitleAnalysis,
+    subtitle_track_count: Optional[int] = None,
+) -> str:
+    """Build the human-readable subtitle-source note for the prompt.
+
+    `subtitle_track_count` is an optional hint from the fetcher:
+    it tells us how many distinct subtitle tracks the upstream video
+    had (0 = none, 1 = single track, 2+ = multi-track). When the
+    fetcher provides it we add explicit "single-track" / "no-track"
+    language so the LLM is not confused by the bare "仅 CC" / "仅 AI"
+    labels — those could otherwise look like the fetcher only emitted
+    half the data instead of the video genuinely having one track.
+    """
     if analysis.has_cc and analysis.has_ai:
         return "CC（人工/官方）+ AI（自动机翻）双源 — 采用 C 方案：以 CC 为主，AI 辅佐校正"
     if analysis.has_cc:
+        if subtitle_track_count == 1:
+            return "仅 CC（人工/官方字幕），单轨 — 无需合并策略，直接蒸馏"
         return "仅 CC（人工/官方字幕）— 无需合并"
     if analysis.has_ai:
+        if subtitle_track_count == 1:
+            return "仅 AI（自动机翻字幕），单轨 — 注意可能的机翻失真"
         return "仅 AI（自动机翻字幕）— 注意可能的机翻失真"
+    if subtitle_track_count == 0:
+        return "无字幕轨道（fetcher 明确返回 0 条字幕）"
     return "无字幕"
 
 
@@ -422,10 +441,21 @@ def build_bilibili_prompt(
     truncated = truncate_subtitle(content, max_chars=max_chars)
     subtitle_block = _format_subtitle_for_prompt(analysis, truncated)
 
+    # The fetcher sets `subtitle_track_count` in metadata to tell us
+    # how many distinct tracks the source video had. We surface this
+    # to the LLM only in the single-track / zero-track cases where the
+    # ambiguous "仅 CC" / "无字幕" wording could otherwise confuse
+    # reasoning. The two-track + both-tags-present case (the C-plan
+    # merge) doesn't need this extra signal.
+    track_count_meta = (raw.metadata or {}).get("subtitle_track_count")
+    track_count: Optional[int] = None
+    if isinstance(track_count_meta, int) and track_count_meta >= 0:
+        track_count = track_count_meta
+
     return BILIBILI_DISTILL_PROMPT.format(
         title_en=raw.title or "",
         description=description or "（无描述）",
-        subtitle_source_note=_subtitle_source_note(analysis),
+        subtitle_source_note=_subtitle_source_note(analysis, track_count),
         subtitle_body=subtitle_block,
     )
 
