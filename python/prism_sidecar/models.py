@@ -49,6 +49,8 @@ class SourceKind(str, Enum):
     # v0.2b PoC: B 站 UP 主投稿 / 单视频拉取。Per-source
     # 标识 (mid / bvid / keyword) 存到 `config_json` 字段,
     # 不需要新加 model 字段,也不动 db schema。
+    # B 站字幕通常 1-2 万字，需要专用 distiller prompt（章节切分
+    # + 关键段选取 + CC/AI 字幕合并），见 ``distillers/bilibili_prompt.py``。
     # 后续 v0.2c 全量接入 YouTube 时会复用 youtube 这个 kind,
     # 所以 bilibili 是独立 kind,不会冲突。
     bilibili = "bilibili"

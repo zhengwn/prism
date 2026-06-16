@@ -90,6 +90,15 @@ PROMPT_TEMPLATE = """你是一名 AI 行业分析师。请把以下内容提炼�
 
 
 def _build_prompt(raw: RawItem) -> str:
+    # B 站长字幕走专属 prompt + 截断策略（v0.2c+）。其他 source kind
+    # 继续走原来的通用模板。
+    # 延迟 import 避免 bilibili_prompt 反向引用 base。
+    from prism_sidecar.distillers.bilibili_prompt import (
+        build_bilibili_prompt,
+        should_use_bilibili_prompt,
+    )
+    if should_use_bilibili_prompt(raw):
+        return build_bilibili_prompt(raw)
     content = raw.content or raw.title
     # Cap content to keep token usage sane.
     if len(content) > 6000:
