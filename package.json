@@ -20,7 +20,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "dev:keychain-check": "cd src-tauri && cargo test --test keychain_smoke -- --nocapture && cargo run --example dev_keychain_check"
+    "dev:keystore-check": "cd src-tauri && cargo test --test keystore_smoke -- --nocapture"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.59.0",
