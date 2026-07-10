@@ -266,7 +266,7 @@ prism/
 │   │   │   ├── orchestrator.py # job 编排：并发控制/取消/后台任务（从 app.py 拆出）
 │   │   │   └── distill.py      # redistill 批处理
 │   │   └── data/fixtures.py  # 8 个种子源（HN + 3 个 Bilibili PoC + 4 个 RSS）
-│   └── tests/                # pytest 249 个 case（实跑核对）
+│   └── tests/                # pytest 253 个 case（实跑核对）
 ├── docs/                     # ROADMAP, ARCHITECTURE
 ├── scripts/                  # smoke.sh / smoke.ps1
 ├── assets/                   # logo / icons
@@ -359,11 +359,11 @@ CREATE VIRTUAL TABLE items_fts USING fts5(
 
 ## 测试覆盖（v0.2c 已完成）
 
-> 下面的 case 数是 2026-07-10 在本机**现场跑出来**的（Python 侧另用 `pytest --collect-only` 逐文件核对）。此前这张表写的是静态数 `def test_` 得出的估计值，和 AGENTS.md 里的数字长期互相矛盾（175 vs 222），实际是 249。
+> 下面的 case 数是 2026-07-10 在本机**现场跑出来**的（Python 侧另用 `pytest --collect-only` 逐文件核对）。此前这张表写的是静态数 `def test_` 得出的估计值，和 AGENTS.md 里的数字长期互相矛盾（175 vs 222）；实跑是 249，补上 `resolve_base_url` 的 4 个回归测试后为 253。
 
 | 层级 | 工具 | 覆盖 |
 |---|---|---|
-| Python fetcher/distiller/store/sync/api | `cd python && uv run pytest -v` — **249/249 绿** | bilibili prompt 31 / **x fetcher 23** / deepseek distiller 22 / bilibili fetcher 18 / FTS5 17 / **youtube fetcher 16** / settings api 16 / **retry+throttle 13** / sync 12 / api 12 / provider registry 11 / minimax distiller 11 / **fetcher registry 11**（含 `lookback_days` 签名回归）/ store 8 / **arxiv fetcher 8** / rss 7 / distill 5 / **podcast fetcher 4** / hn 4 |
+| Python fetcher/distiller/store/sync/api | `cd python && uv run pytest -v` — **253/253 绿** | bilibili prompt 31 / **x fetcher 23** / deepseek distiller 22 / bilibili fetcher 18 / FTS5 17 / **youtube fetcher 16** / settings api 20 / **retry+throttle 13** / sync 12 / api 12 / provider registry 11 / minimax distiller 11 / **fetcher registry 11**（含 `lookback_days` 签名回归）/ store 8 / **arxiv fetcher 8** / rss 7 / distill 5 / **podcast fetcher 4** / hn 4 |
 | Rust keystore | `cargo test --test keystore_smoke` | **8/8 绿**（roundtrip+密文无明文 / 0600 / 损坏容错 / 并发写 / key_last4 / active-provider 校验 / 迁移幂等 / 真 macOS Keychain migration roundtrip） |
 | Rust 公开 helper + IPC serde | `cargo test --test llm_config_smoke` | **9/9 绿**（username 格式 / is_known_provider / default_model / CustomLlmConfig JSON 形状 / IPC camelCase，含 `keyLast4`/`keyLength`）。注：v0.2b~v0.2c 期间这个 target 一直**编译不过**（结构体加了字段、测试没跟），v0.2c 收尾才修好 |
 | React 关键组件 | `npm test` — **28/28 绿** | Button 3 / DetailPanel 4 / inline-markdown 10 / InboxPage 2 / SettingsPage 4 / SourcesPage 5 |

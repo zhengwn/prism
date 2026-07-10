@@ -2,7 +2,7 @@
 
 > 公开 v1.0 之前的规划。v0.2c（多源补齐）**已收尾并在本机全量验证过**（2026-07-10）：Bilibili、YouTube、Podcast、arXiv、**X（bridge-RSS PoC）** 五路 fetcher + 错误重试/速率限制 + 优雅关闭 + Vite setApiKey 修复 + **Apply & Restart Sidecar 按钮**；**Playwright 前端 E2E 已跑绿**（Tauri-shell 层留待 tauri-driver）。
 >
-> **实测结果**（不再是静态计数）：`uv run pytest` **249/249 绿** · `npm test` **28/28 绿** · `cargo test` **17/17 绿**（keystore 8 + llm_config 9）· `cargo check --all-targets` 干净 · `npm run build` 干净 · `npm run test:e2e` **5/5 绿**。跑之前修掉了三个真实缺陷，见下面「收尾验证」小节。
+> **实测结果**（不再是静态计数）：`uv run pytest` **253/253 绿** · `npm test` **28/28 绿** · `cargo test` **17/17 绿**（keystore 8 + llm_config 9）· `cargo check --all-targets` 干净 · `npm run build` 干净 · `npm run test:e2e` **5/5 绿**。跑之前修掉了三个真实缺陷；随后又用真实 MiniMax key 跑通了 **distill 端到端**（2 条真实 LLM 调用 + FTS5 索引验证），另修两个附带问题。见下面「收尾验证」小节。
 
 ## 实际状态
 
@@ -24,7 +24,7 @@
   - **Bilibili fetcher PoC 已合入**：mid/bvid 两种订阅模式 + CC/AI 字幕合并 + 章节切分，`distillers/bilibili_prompt.py` 专属提炼 prompt；前端 SourcesPage/DetailPanel 已能加 Bilibili 源、嵌入播放器（commits: `fbef1ac` fetcher / `f7db3b7` prompt / `9f2bba8` 接线 / `e95dc50` 前端 / 三个 merge commit）
   - **sidecar 内部拆分**（不在原 roadmap 里，属于顺手的工程债清理）：`app.py` 里的同步 job 编排（并发控制/取消/后台任务）拆到独立的 `pipeline/orchestrator.py`，路由文件从 900+ 行瘦到 500 多行
   - 种子源从 5 个涨到 8 个（新增 3 个 Bilibili AI 资讯 UP 主）
-  - 测试：pytest **249/249 绿**（实跑，`--collect-only` 逐文件核对过；此前 ROADMAP/README 写的 175、AGENTS/ARCHITECTURE 写的 222 都是静态计数，且互相矛盾），vitest **28/28 绿**（v0.2b 记的 32 一直是错的）
+  - 测试：pytest **253/253 绿**（实跑，`--collect-only` 逐文件核对过；此前 ROADMAP/README 写的 175、AGENTS/ARCHITECTURE 写的 222 都是静态计数，且互相矛盾），vitest **28/28 绿**（v0.2b 记的 32 一直是错的）
   - **补做的历史欠账**（这轮全项目复查带出来的，不是新功能）：
     - `i18n/en.json`/`zh.json` 里的 `_keyIndex` 数组（195 条，没有任何代码引用）终于真删了——之前 ROADMAP 一直写着"v0.2b 已清理"，其实一直没删
     - `formatRelativeTime()`（"3h ago" 这种相对时间）之前不管 UI 语言都固定输出英文，违反 AGENTS.md 自己定的"所有用户可见字符串都要过 `t()`"规矩；现在接上 `time.*` i18n key，中文界面显示"3 小时前"
@@ -87,7 +87,7 @@
 - [x] **Vitest 覆盖扩展**：7 → 32 case（+ 25 个新 case）
 - [x] **测试**：114/114 pytest、32/32 vitest、8/8 Rust keystore smoke
 
-## v0.2c — 多源补齐 + 错误处理（进行中）
+## v0.2c — 多源补齐 + 错误处理 ✅
 
 - [x] **Bilibili fetcher PoC**（mid/bvid 两种模式 + CC/AI 字幕合并 + 章节切分专属 prompt + 前端接入）——原计划里没写这条，是实际先做的
 - [x] **YouTube fetcher**（yt-dlp + 字幕提取；设计稿 `docs/design/youtube-fetcher.md`）：channel/video 两模式对齐 Bilibili 的 mid/bvid；字幕四级优先（人工 zh → 人工任意 → 自动 zh → 自动 en），json3 → 共享 `fetchers/_subtitle.py` 的 `[CC]/[AI]` 行格式；`lookback_days` 真正生效（upload_date 可靠，列表倒序遇过期即停）；`bilibili_prompt` 泛化为按 `feed_kind` 插值平台措辞（B 站输出逐字不变），`should_use_bilibili_prompt` 扩到 `feed_kind in {bilibili, youtube}`；前端 SourcesPage badge/URL 解析 + DetailPanel youtube-nocookie 播放器 + i18n（en/zh 各 +5 key，逐 key 对齐）
@@ -126,11 +126,24 @@
 - 建一个没配 bridge 的 **X 源**验证错误契约：`last_error` 落到了一条**可操作的配置错误**文案；`_meta` 表里 `fail_streak=1`、`retry_after` 正好是 **+24h**（non-retryable → 24h，符合设计）；而 `first_sync_done` **只对成功的源写入**，失败的 X 源没写——印证了"fetch 失败不消耗 first-sync 宽窗口"
 - **优雅关闭**：空闲时 SIGTERM **0.23s** 退出；在 10 源全量 sync 跑到一半时 SIGTERM，**3.87s 内 drain 完退出**（Python 宽限 4.0s < Tauri SIGKILL 5.0s，实测顺序成立），日志有 `job ... cancelled` + `all in-flight sync work drained cleanly`，DB 里那条 job **`status=cancelled` / `items_new=113` / `sources_done=1/10` / `finished_at` 已写**——部分进度确实落盘了，没有留下永远 `running` 的孤儿 job
 
+**真实 distill 端到端验证**（补做于 2026-07-10，用用户已配置的 MiniMax key）：
+
+- 从 `~/.prism/keystore.json` 解出 `minimax` key（AES-256-GCM + AAD `prism-keystore-v1`，GCM 认证通过顺带证明 keystore 未损坏），按 `sidecar.rs` 的 env 契约注入 `MINIMAX_API_KEY` / `MINIMAX_API_BASE` / `PRISM_ACTIVE_PROVIDER`
+- `/health` → `distillerConfigured: true`；`POST /api/distill/redistill?batch_limit=2` → **`distilled: 2, failed: 0, key_invalid: false`**，两次真实 LiteLLM → MiniMax-M3 调用，约 25s
+- 产出完整落库：`title_zh` / `summary_zh` / 5 条 `key_points_zh` / 5 个 `tags_zh`
+- 顺带验了 **distill → FTS5** 链路：搜索「定价」（只出现在 `summary_zh`/`tags_zh`）精确命中刚提炼的那条
+- **刻意只跑 2 条**（`batch_limit`），没必要为验证烧掉 193 条 backlog 的 token。仍在隔离的 `PRISM_DATA_DIR` 里跑，用户真实 `~/.prism/data.db` 只读未写
+
+这一轮带出的两个小问题（都不影响功能，已修）：
+
+- 启动 banner 打 `base_url=None`，但 env 覆盖其实生效了——那行直接回显 `active_provider.json` 的 `base_url` 字段，而真正的解析在 `distillers/minimax.py`（`explicit > env > default`）。新增 `settings.resolve_base_url()` 让 banner 报**生效值**，配 4 个回归测试钉死优先级
+- `package.json` 的 `dev:keychain-check` 同时引用了 `--test keychain_smoke` 和 `--example dev_keychain_check`，**两者都不存在**（v0.2b keystore 重写时测试改名成 `keystore_smoke.rs`，example 目录压根没建过）——这个 script 从 v0.2b 起跑必然失败。改成 `dev:keystore-check`，指向真实存在的 `keystore_smoke`
+
 **仍未覆盖**（诚实记账，别再让文档撒谎）：
 
 - **Tauri 壳内路径**：`invoke`、AES keystore、sidecar spawn、`restart_sidecar` 按钮的真实点击。`cargo test` 只覆盖到 Rust 单元层；`restart_sidecar` 已确认注册进 `invoke_handler`、`api.ts` 也有 `isTauri()` 守卫，但**没有在真 app 里点过**。需要 `tauri-driver` + WebdriverIO
-- **真实 distill**：全程没有 API key，`itemsDistilled` 一直是 0，LLM 提炼链路没有端到端跑过
 - **Bilibili / YouTube / Podcast fetcher 的真实网络抓取**：只有单测覆盖（Bilibili 在 drain 测试里被 SIGTERM 打断了）
+- **distill 的失败路径**：只验了 happy path。`key_invalid` 提前停批、JSON 解析兜底（全角引号救援）等分支仍只有单测
 - `GET /api/sync/{job_id}` 在**运行中**返回 `sourcesTotal=0`：`create_job` 建行时不写 `sources_total`，只在 `finish_job` 落盘，但 `_background_pipeline` 的 docstring 声称"updating the job row as we go"。前端只读**终态** job 的 `sourcesTotal`（取消 toast），所以**用户看不到**，属于 API 契约的潜在瑕疵，没在这轮动它
 
 ## v0.3 — Agent 接口
