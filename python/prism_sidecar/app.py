@@ -87,10 +87,12 @@ run_failed_retry_background = orchestrator.run_failed_retry_background
 # picked up), but the /api/settings/llm endpoint can hot-swap this
 # reference for callers that want to test the change immediately.
 #
-# TODO(v0.2a): this is best-effort. The reliable way to apply a
-# provider change is to restart the sidecar (Tauri kills + respawns
-# it). Hot-swap is documented as a "may help for quick UI feedback"
-# nicety, not a guarantee.
+# NOTE: the hot-swap is best-effort — a "may help for quick UI feedback"
+# nicety, not a guarantee. The reliable way to apply a provider change is
+# to restart the sidecar so it re-reads its env. Since v0.2c that is a
+# first-class user action (`sidecar::restart_sidecar`, surfaced as the
+# "Apply & Restart Sidecar" button in Settings), so this is no longer a
+# TODO — it's the documented division of labour.
 _current_distiller: object | None = None
 
 # ---- Lifespan ------------------------------------------------------------

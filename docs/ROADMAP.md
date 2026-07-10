@@ -72,7 +72,7 @@
 
 - [x] i18n `_keyIndex` 数组：v0.2a 为兼容 verifier 写的临时数组，5KB 死重量——**这里之前写着"v0.2b 已清理"，其实没清理，一直留到 v0.2c 才真的删掉**（en.json/zh.json 各 195 条，没有任何代码引用它，见下面 v0.2c 清单）
 - [x] Vitest 覆盖再加（v0.2b 从 7 case → 32 case，+25）
-- [ ] `setApiKey` 在 Vite 调试下抛错（被 React Query onError 接住，prod 无影响，留到 v0.2c 顺手清）
+- [x] `setApiKey` 在 Vite 调试下抛错（被 React Query onError 接住，prod 无影响）——**v0.2c 已修**（见下面 v0.2c 清单：非 Tauri 路径剥掉 `apiKey` + console.warn）。这个复选框在 v0.2c 收尾后仍未打勾，2026-07-10 补上
 
 ## v0.2b — 基础设施重构 + UX 打磨 ✅
 
