@@ -31,7 +31,8 @@ from typing import Any, Iterable
 import httpx
 
 from prism_sidecar.config import FETCH_TIMEOUT_SEC
-from prism_sidecar.fetchers.base import Fetcher, RawItem
+from prism_sidecar.fetchers._subtitle import format_timestamp, subtitle_body_to_markdown
+from prism_sidecar.fetchers.base import FetchError, Fetcher, RawItem
 from prism_sidecar.models import ContentType, Source, SourceKind
 
 log = logging.getLogger(__name__)
@@ -166,60 +167,12 @@ def _subtitle_url(picked: dict[str, Any]) -> str | None:
     return raw
 
 
-def _format_timestamp(seconds: float) -> str:
-    """B 站字幕 body 用浮点秒,转 ``HH:MM:SS`` 方便人读。
-    超过一小时才会出现 ``HH:``,否则 ``MM:SS``。
-    """
-    s = float(seconds)
-    if s < 0:
-        s = 0
-    h = int(s // 3600)
-    m = int((s % 3600) // 60)
-    sec = int(s % 60)
-    if h > 0:
-        return f"{h:02d}:{m:02d}:{sec:02d}"
-    return f"{m:02d}:{sec:02d}"
-
-
-def _subtitle_body_to_markdown(
-    body: list[dict[str, Any]],
-    *,
-    cue_kind: str = "unknown",
-) -> str:
-    """Convert ``{"body":[{"from":sec,"to":sec,"content":"..."}]}`` to markdown.
-
-    Each cue becomes one line: ``- [MM:SS] [CC] content`` (or ``[AI]``).
-    The per-line ``[CC]`` / ``[AI]`` tag is what the distiller
-    (`distillers/bilibili_prompt.py`) keys off to split CC vs AI tracks
-    downstream — see ``_CC_PREFIX_RE`` / ``_AI_PREFIX_RE`` there.
-    Consecutive cues with identical ``content`` (B 站 AI 字幕常见的
-    "重复行"问题) 被去重。
-
-    ``cue_kind`` is the picked track's provenance ("cc" / "ai" /
-    "unknown"). When the picked track is "unknown" we omit the tag
-    so we don't mislead the distiller.
-    """
-    tag = ""
-    if cue_kind == "cc":
-        tag = "[CC] "
-    elif cue_kind == "ai":
-        tag = "[AI] "
-
-    lines: list[str] = []
-    last_text: str | None = None
-    for cue in body:
-        if not isinstance(cue, dict):
-            continue
-        text = (cue.get("content") or "").strip()
-        if not text:
-            continue
-        if text == last_text:
-            # Skip AI-subtitle's notorious "ghost repeat" line.
-            continue
-        last_text = text
-        ts = _format_timestamp(cue.get("from", 0))
-        lines.append(f"- [{ts}] {tag}{text}")
-    return "\n".join(lines)
+# v0.2c: moved to `fetchers/_subtitle.py` so the YouTube fetcher shares
+# the exact same cue format (the [CC]/[AI] line shape is a contract with
+# distillers/bilibili_prompt.py). Re-bound here under the old private
+# names so existing tests / callers keep working.
+_format_timestamp = format_timestamp
+_subtitle_body_to_markdown = subtitle_body_to_markdown
 
 
 def _video_to_markdown(
@@ -369,19 +322,18 @@ class BilibiliFetcher:
         ``**kwargs`` swallows the ``lookback_days`` the pipeline passes
         to every fetcher — B 站 doesn't have a meaningful lookback
         (we either fetch a UP's first page, or a specific bvid), so we
-        silently ignore it. Same behaviour as RSSFetcher.
+        silently ignore it. (RSSFetcher, by contrast, does use
+        ``lookback_days`` to bound its cutoff — see ``fetchers/rss.py``.)
 
-        On any unrecoverable error (mode missing, lib not installed,
-        network fatal), logs and returns ``[]`` so the pipeline can
-        continue with other sources.
+        v0.2c contract: unrecoverable whole-source errors (mode missing,
+        lib not installed, listing endpoint dead) raise ``FetchError``;
+        per-video errors are skipped so one broken video doesn't sink
+        the UP 主's whole sync.
         """
         if _bili_user is None or _bili_video is None:
-            log.error(
-                "[bilibili] bilibili-api-python not installed; "
-                "source=%s skipped",
-                source.id,
+            raise FetchError(
+                "bilibili-api-python not installed", retryable=False,
             )
-            return []
 
         mid = _config_get(source, "mid")
         bvid = _config_get(source, "bvid")
@@ -393,24 +345,22 @@ class BilibiliFetcher:
             if bvid:
                 return await self._fetch_one(bvid=bvid, source=source)
             if keyword:
-                # PoC 范围外:keyword 搜索留 TODO。
-                log.warning(
-                    "[bilibili] source %s has 'keyword' but PoC does not "
-                    "implement keyword search; skipping",
-                    source.id,
+                # PoC 范围外:keyword 搜索留 TODO。Non-retryable so the
+                # cooldown logic doesn't hammer an unimplemented mode.
+                raise FetchError(
+                    "keyword-mode Bilibili sources are not implemented yet",
+                    retryable=False,
                 )
-                return []
-            log.warning(
-                "[bilibili] source %s has no mid/bvid/keyword in config_json; "
-                "skipping",
-                source.id,
+            raise FetchError(
+                "config_json has no mid/bvid/keyword", retryable=False,
             )
-            return []
+        except FetchError:
+            raise
         except Exception as exc:  # noqa: BLE001
             log.exception(
                 "[bilibili] source %s fetch raised: %s", source.id, exc,
             )
-            return []
+            raise FetchError(f"unexpected error: {exc!r}") from exc
 
     # -- mid mode (UP 主投稿列表) ------------------------------------
 
@@ -420,10 +370,11 @@ class BilibiliFetcher:
             u = _bili_user.User(uid=int(mid))  # type: ignore[union-attr]
             page = await u.get_videos(pn=1, ps=self._ps)
         except Exception as exc:  # noqa: BLE001
+            # The listing call IS the source — its failure is whole-source.
             log.error(
                 "[bilibili] get_videos(mid=%s) failed: %s", mid, exc,
             )
-            return []
+            raise FetchError(f"get_videos(mid={mid}) failed: {exc}") from exc
 
         # `page` is the B 站 response shape.
         #
@@ -439,11 +390,12 @@ class BilibiliFetcher:
         elif isinstance(page, dict):
             data = page
         else:
+            # Non-dict response = API shape changed = whole-source problem.
             log.warning("[bilibili] get_videos(mid=%s) returned no data: %r", mid, page)
-            return []
+            raise FetchError(f"get_videos(mid={mid}) returned unexpected shape")
         if not data:
             log.warning("[bilibili] get_videos(mid=%s) returned no data: %r", mid, page)
-            return []
+            raise FetchError(f"get_videos(mid={mid}) returned empty data")
         list_block = data.get("list") or {}
         vlist = list_block.get("vlist") or []
         if not isinstance(vlist, list) or not vlist:

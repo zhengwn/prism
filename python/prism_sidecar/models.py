@@ -54,6 +54,10 @@ class SourceKind(str, Enum):
     # 后续 v0.2c 全量接入 YouTube 时会复用 youtube 这个 kind,
     # 所以 bilibili 是独立 kind,不会冲突。
     bilibili = "bilibili"
+    # v0.2c: arXiv 论文源。分类列表（cs.AI / cs.LG / cs.CL …）存
+    # `config_json.categories`，走 export.arxiv.org 的 Atom API，
+    # 见 ``fetchers/arxiv.py``。db 的 kind 列是 TEXT,不需要迁移。
+    arxiv = "arxiv"
 
 
 class ItemStatus(str, Enum):

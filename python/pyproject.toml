@@ -15,6 +15,7 @@ dependencies = [
     "apscheduler>=3.10",
     "python-dateutil>=2.9",
     "bilibili-api-python>=17.4.1",
+    "yt-dlp>=2025.6.9",
 ]
 
 [project.scripts]

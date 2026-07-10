@@ -8,7 +8,7 @@
 
 外加一些 sub-case 验证：
 - 解析时区分 [CC] / [AI] / untagged
-- 触发 LitellmDistiller.distill() 走 bilibili 分支（via source_kind metadata）
+- 触发 LitellmDistiller.distill() 走 bilibili 分支（via feed_kind metadata）
 - 离线烟雾测试：mock distiller + fixture 字幕 → 验证输出 schema
 """
 
@@ -54,7 +54,7 @@ def _raw_bilibili(
     url: str = "https://www.bilibili.com/video/BV1abc",
     description: str = "",
     author: str | None = "某UP主",
-    source_kind: str = "bilibili",
+    feed_kind: str = "bilibili",
 ) -> RawItem:
     return RawItem(
         url=url,
@@ -63,7 +63,7 @@ def _raw_bilibili(
         published_at=datetime(2026, 6, 16, 10, 0, tzinfo=timezone.utc),
         author=author,
         content_type=ContentType.video,
-        metadata={"source_kind": source_kind, "description": description},
+        metadata={"feed_kind": feed_kind, "description": description},
     )
 
 
@@ -236,7 +236,7 @@ def test_single_track_cc_note_explicit():
         title="Single CC track",
         content="[CC] line one\n[CC] line two\n",
         published_at=datetime(2026, 6, 16, tzinfo=timezone.utc),
-        metadata={"source_kind": "bilibili", "subtitle_track_count": 1},
+        metadata={"feed_kind": "bilibili", "subtitle_track_count": 1},
         content_type=ContentType.video,
     )
     prompt = build_bilibili_prompt(raw)
@@ -250,7 +250,7 @@ def test_single_track_ai_note_explicit():
         title="Single AI track",
         content="[AI] line one\n[AI] line two\n",
         published_at=datetime(2026, 6, 16, tzinfo=timezone.utc),
-        metadata={"source_kind": "bilibili", "subtitle_track_count": 1},
+        metadata={"feed_kind": "bilibili", "subtitle_track_count": 1},
         content_type=ContentType.video,
     )
     prompt = build_bilibili_prompt(raw)
@@ -265,7 +265,7 @@ def test_zero_track_note_explicit_when_empty():
         title="No subtitle track",
         content="",
         published_at=datetime(2026, 6, 16, tzinfo=timezone.utc),
-        metadata={"source_kind": "bilibili", "subtitle_track_count": 0},
+        metadata={"feed_kind": "bilibili", "subtitle_track_count": 0},
         content_type=ContentType.video,
     )
     # Empty content routes to the meta-only fallback path (different
@@ -284,7 +284,7 @@ def test_no_track_count_metadata_still_works():
         title="Old fetcher",
         content="[CC] only cc\n",
         published_at=datetime(2026, 6, 16, tzinfo=timezone.utc),
-        metadata={"source_kind": "bilibili"},  # no track_count
+        metadata={"feed_kind": "bilibili"},  # no track_count
         content_type=ContentType.video,
     )
     prompt = build_bilibili_prompt(raw)
@@ -301,7 +301,7 @@ def test_two_track_with_both_tags_still_routes_to_c_plan():
         title="Two tracks",
         content="[CC] cc line\n[AI] ai line\n",
         published_at=datetime(2026, 6, 16, tzinfo=timezone.utc),
-        metadata={"source_kind": "bilibili", "subtitle_track_count": 2},
+        metadata={"feed_kind": "bilibili", "subtitle_track_count": 2},
         content_type=ContentType.video,
     )
     prompt = build_bilibili_prompt(raw)
@@ -317,7 +317,7 @@ def test_invalid_track_count_metadata_falls_back_safely():
             title="Bad metadata",
             content="[CC] x\n",
             published_at=datetime(2026, 6, 16, tzinfo=timezone.utc),
-            metadata={"source_kind": "bilibili", "subtitle_track_count": bad},
+            metadata={"feed_kind": "bilibili", "subtitle_track_count": bad},
             content_type=ContentType.video,
         )
         prompt = build_bilibili_prompt(raw)
@@ -385,7 +385,7 @@ def test_is_bilibili_detects_via_url():
     raw = _raw_bilibili(
         "anything",
         url="https://www.bilibili.com/video/BV1abc",
-        source_kind="rss",  # intentionally wrong kind
+        feed_kind="rss",  # intentionally wrong kind
     )
     assert is_bilibili(raw) is True
 

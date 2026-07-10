@@ -118,7 +118,7 @@ def main() -> None:
         author="AI 圆桌官方",
         content_type=__import__("prism_sidecar.models", fromlist=["ContentType"]).ContentType.video,
         metadata={
-            "source_kind": "bilibili",
+            "feed_kind": "bilibili",
             "description": "本期话题:大模型的 scaling law 还成立吗?周老师在最近一篇论文里提出了一个新的假设,Emily 从 HuggingFace 的工业界视角回应。",
         },
     )

@@ -7,18 +7,28 @@ HackerNewsFetcher directly. The default for `rss` is RSSFetcher.
 
 from __future__ import annotations
 
+from prism_sidecar.fetchers.arxiv import ArxivFetcher
 from prism_sidecar.fetchers.base import Fetcher
 from prism_sidecar.fetchers.bilibili import BilibiliFetcher
 from prism_sidecar.fetchers.hackernews import HackerNewsFetcher
+from prism_sidecar.fetchers.podcast import PodcastFetcher
 from prism_sidecar.fetchers.rss import RSSFetcher
+from prism_sidecar.fetchers.x import XFetcher
+from prism_sidecar.fetchers.youtube import YouTubeFetcher
 from prism_sidecar.models import SourceKind
 
 _REGISTRY: dict[SourceKind, Fetcher] = {
     SourceKind.rss: RSSFetcher(),
     SourceKind.bilibili: BilibiliFetcher(),
-    # Other SourceKinds (youtube, podcast, blog, x, pdf, file) are not
-    # implemented in v0.2a. The pipeline treats them as no-op and records
-    # an error.
+    SourceKind.youtube: YouTubeFetcher(),
+    SourceKind.podcast: PodcastFetcher(),
+    SourceKind.arxiv: ArxivFetcher(),
+    SourceKind.x: XFetcher(),
+    # `blog` intentionally routes to RSSFetcher too — a blog source is
+    # just an RSS feed with a different label in the UI.
+    SourceKind.blog: RSSFetcher(),
+    # Remaining SourceKinds (pdf, file) are not implemented yet
+    # (v0.2c backlog). The pipeline treats them as no-op.
 }
 
 _HN_FETCHER: Fetcher = HackerNewsFetcher()
@@ -42,7 +52,10 @@ class _NoopFetcher:
 
     kind: SourceKind = SourceKind.blog  # arbitrary
 
-    async def fetch(self, source):  # type: ignore[no-untyped-def]
+    async def fetch(self, source, **_kwargs):  # type: ignore[no-untyped-def]
+        # Accepts (and ignores) `lookback_days` — the pipeline passes it
+        # to every fetcher unconditionally, see `Fetcher.fetch`'s docstring
+        # in fetchers/base.py.
         import logging
 
         logging.getLogger(__name__).warning(

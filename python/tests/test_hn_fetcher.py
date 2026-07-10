@@ -101,3 +101,20 @@ async def test_hn_fetcher_dedupes_across_keywords():
 
     # Same hit list returned for every query, but deduped by objectID
     assert len(items) == 2
+
+
+@pytest.mark.asyncio
+async def test_hn_fetcher_accepts_lookback_days_kwarg():
+    """Regression test — see the matching test in test_rss_fetcher.py.
+    `pipeline/sync.py` always calls `fetcher.fetch(source, lookback_days=...)`;
+    HackerNewsFetcher has no real lookback concept (it fetches all-time and
+    dedupes by objectID) but MUST still accept the keyword or the pipeline
+    call raises `TypeError` for every HN sync.
+    """
+    fetcher = HackerNewsFetcher(hits_per_page=20, max_retries=0)
+    with respx.mock() as mock:
+        mock.get("https://hn.algolia.com/api/v1/search").mock(
+            return_value=Response(200, json=SAMPLE_HITS)
+        )
+        items = await fetcher.fetch(_make_source(query="AI"), lookback_days=7)
+    assert len(items) == 2

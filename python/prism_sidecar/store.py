@@ -132,6 +132,34 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
+async def _fts_upsert(db, item_id: str) -> None:
+    """(Re)write the FTS5 index row for one item.
+
+    Schema v3: `items_fts` is self-contained and stores the
+    CJK-segmented form of the text (see fts5.segment_cjk), so index
+    maintenance for INSERT/UPDATE happens here in Python rather than
+    in SQL triggers (triggers can't segment). Deletion is still
+    trigger-driven (rowid-based, no segmentation needed).
+    """
+    from prism_sidecar.fts5 import segment_cjk
+
+    cur = await db.execute(
+        "SELECT rowid, title_en, title_zh, summary_en, summary_zh, "
+        "key_points_zh, tags_zh FROM items WHERE id = ?",
+        (item_id,),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return
+    rowid = row[0]
+    await db.execute("DELETE FROM items_fts WHERE rowid = ?", (rowid,))
+    await db.execute(
+        "INSERT INTO items_fts(rowid, title_en, title_zh, summary_en, "
+        "summary_zh, key_points_zh, tags_zh) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (rowid, *(segment_cjk(v) for v in row[1:])),
+    )
+
+
 # ----- Health -------------------------------------------------------------
 
 async def health_snapshot() -> dict:
@@ -318,62 +346,38 @@ async def list_items(
         fts_match = sanitize_fts5_query(q)
 
     if fts_match is not None:
-        # FTS5 path: drive the item list from the index, then join
-        # back to items + sources for the rest of the columns.
+        # FTS5 path: one JOIN across items_fts → items → sources,
+        # ordered by FTS rank. Every column reference is qualified,
+        # so the "ambiguous rowid" trap the pre-v3 two-query version
+        # worked around doesn't apply.
         #
-        # The two queries are kept separate (rather than a single
-        # JOIN across items_fts and items) for two reasons:
-        #   1. Both tables have a `rowid` column and SQLite gets
-        #      confused if you JOIN them and then try to filter or
-        #      order by rowid — it raises "ambiguous column name".
-        #   2. We need the FTS rank order preserved in the final
-        #      list. Pulling rowids in the right order first and
-        #      then re-ordering the joined result with a CASE is
-        #      the cleanest way to do that.
-        cur = await db.execute(
-            "SELECT rowid FROM items_fts WHERE items_fts MATCH ? "
-            "ORDER BY rank LIMIT ? OFFSET ?",
-            (fts_match, int(limit), int(offset)),
-        )
-        rowids = [r[0] for r in await cur.fetchall()]
-        if not rowids:
-            return []
-        # Look up the human-readable id for each rowid, preserving
-        # the FTS rank order. We can't use the rowid directly in
-        # the items WHERE because items.id is a TEXT primary key,
-        # not the rowid. (WITHOUT ROWID tables are different; ours
-        # is a normal heap table so id != rowid.)
-        cur = await db.execute(
-            f"SELECT id FROM items WHERE rowid IN ({','.join('?' for _ in rowids)})",
-            tuple(rowids),
-        )
-        rid_to_id: dict[int, str] = dict(zip(rowids, [r[0] for r in await cur.fetchall()]))
-        # Drop any rowids that no longer exist (deleted between
-        # the FTS query and the lookup). Shouldn't happen in
-        # practice but we want a graceful result, not a crash.
-        ordered_ids = [rid_to_id[r] for r in rowids if r in rid_to_id]
-        if not ordered_ids:
-            return []
-        # Final query: fetch the full row, preserving FTS rank
-        # order via CASE on the id. (JOIN with sources for the
-        # human-readable name the inbox sidebar uses.)
-        order_case = " ".join(
-            f"WHEN i.id = ? THEN {i}" for i in range(len(ordered_ids))
-        )
-        placeholders = ",".join("?" for _ in ordered_ids)
+        # The source_id / status filters are applied HERE too — the
+        # pre-v3 version silently dropped them on the FTS path, so
+        # searching with a source or status filter active returned
+        # unfiltered results (the inbox sends all three together).
+        where = ["items_fts MATCH ?"]
+        args = [fts_match]
+        if source_id:
+            where.append("i.source_id = ?")
+            args.append(source_id)
+        if status and status != "all":
+            where.append("i.status = ?")
+            args.append(status)
         sql = f"""
             SELECT i.id, i.source_id, i.url, i.title_en, i.title_zh, i.summary_en,
                    i.summary_zh, i.key_points_zh, i.tags_zh, i.author,
                    i.published_at, i.fetched_at, i.distilled_at, i.status,
                    i.content_type, i.duration_sec, i.metadata_json,
                    s.name AS source_name
-            FROM items i
+            FROM items_fts
+            JOIN items i ON i.rowid = items_fts.rowid
             JOIN sources s ON s.id = i.source_id
-            WHERE i.id IN ({placeholders})
-            ORDER BY CASE {order_case} END
+            WHERE {' AND '.join(where)}
+            ORDER BY items_fts.rank
+            LIMIT ? OFFSET ?
         """
-        params: list[Any] = list(ordered_ids) + list(ordered_ids)
-        cur = await db.execute(sql, tuple(params))
+        args.extend([int(limit), int(offset)])
+        cur = await db.execute(sql, tuple(args))
         rows = await cur.fetchall()
         items: list[KnowledgeItem] = []
         for row in rows:
@@ -486,6 +490,9 @@ async def insert_item_from_raw(source: Source, raw: RawItem) -> str:
             "UPDATE items SET summary_en = ? WHERE id = ?",
             (en_summary, item_id),
         )
+    # Schema v3: write the (CJK-segmented) FTS index row. Done after
+    # the summary placeholder so the index sees the final values.
+    await _fts_upsert(db, item_id)
     await db.commit()
     return item_id
 
@@ -509,7 +516,25 @@ async def update_item_distilled(item_id: str, distilled: DistilledItem) -> None:
             item_id,
         ),
     )
+    # Schema v3: refresh the FTS index row with the new zh fields.
+    await _fts_upsert(db, item_id)
     await db.commit()
+
+
+async def update_item_status(item_id: str, status: ItemStatus) -> Optional[KnowledgeItem]:
+    """Set an item's read/starred/archived status. Returns the updated item.
+
+    `status` is not FTS-indexed, so no index maintenance is needed here.
+    """
+    db = get_db()
+    cur = await db.execute(
+        "UPDATE items SET status = ? WHERE id = ?",
+        (status.value, item_id),
+    )
+    await db.commit()
+    if cur.rowcount == 0:
+        return None
+    return await get_item(item_id)
 
 
 # ----- Sync jobs / history ------------------------------------------------
@@ -619,6 +644,34 @@ async def is_any_job_running() -> bool:
         "SELECT 1 FROM sync_jobs WHERE status = 'running' LIMIT 1"
     )
     return (await cur.fetchone()) is not None
+
+
+async def fail_orphan_running_jobs() -> int:
+    """Mark leftover 'running' jobs as errored. Returns the count fixed.
+
+    Called once at startup (lifespan). If the sidecar crashed or was
+    killed mid-sync, its job row stays 'running' forever — and because
+    `is_any_job_running()` treats that row as an active sync, every
+    subsequent /api/sync would 409 until the DB was hand-edited. No
+    such job can actually be running at startup (jobs live only in
+    this process), so flipping them to 'error' is always safe.
+    """
+    db = get_db()
+    cur = await db.execute(
+        """
+        UPDATE sync_jobs
+        SET status = 'error', finished_at = ?,
+            error = 'orphaned: sidecar exited mid-run'
+        WHERE status = 'running'
+        """,
+        (datetime.now(timezone.utc).isoformat(),),
+    )
+    await db.commit()
+    if cur.rowcount:
+        log.warning(
+            "[store] marked %d orphaned running sync job(s) as error", cur.rowcount
+        )
+    return cur.rowcount
 
 
 async def write_sync_log(
@@ -739,11 +792,13 @@ __all__ = [
     "item_exists_by_url",
     "insert_item_from_raw",
     "update_item_distilled",
+    "update_item_status",
     "create_job",
     "finish_job",
     "update_job_progress",
     "get_job",
     "is_any_job_running",
+    "fail_orphan_running_jobs",
     "write_sync_log",
     "list_sync_history",
     "ensure_default_sources",

@@ -1,8 +1,14 @@
 """Default seed sources for first-run bootstrap.
 
 When the SQLite DB has zero sources, `store.ensure_default_sources` inserts
-these rows. v0.2a ships five: Hacker News (via Algolia), Simon Willison's
-weblog, OpenAI Blog, Anthropic News, and Hugging Face Blog.
+these rows. v0.2a shipped five: Hacker News (via Algolia), Simon Willison's
+weblog, OpenAI Blog, a DeepMind-blog stand-in for Anthropic (Anthropic has
+no public RSS feed — see the inline comment on that entry), and Hugging
+Face Blog. v0.2c's Bilibili PoC added three more (智东西 / 机器之心 /
+PaperWeekly), so `SEED_SOURCES` currently has **8** entries, not 5 — keep
+this count in sync with README.md's "首次启动会自动从 fixtures 导入 N 个
+种子源" line and AGENTS.md/ARCHITECTURE.md's directory-tree comments if it
+changes again.
 
 The "items" list is no longer used — items now come from real fetches. We
 keep a small sample of demo items in the legacy `ITEMS` export so older

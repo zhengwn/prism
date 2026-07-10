@@ -1,11 +1,15 @@
-"""FTS5 full-text search tests.
+"""FTS5 full-text search tests (schema v3).
 
 Exercises:
   - the sanitizer (special chars, Chinese, empty)
-  - the live trigger-driven index (INSERT/UPDATE/DELETE sync)
+  - the store-maintained index (INSERT/UPDATE via _fts_upsert,
+    DELETE via trigger)
   - the prefix-match behavior (typing "and" finds "Andreas")
-  - Chinese single-character tokenization (typing "开" finds "开源")
-  - the store integration (list_items(q=...) returns ranked FTS hits)
+  - Chinese substring search via per-char segmentation (typing
+    "协作" finds "开源协作新工具" — mid-run matches, not just
+    run prefixes)
+  - the store integration (list_items(q=...) returns ranked FTS
+    hits, respecting source/status filters)
 """
 
 from __future__ import annotations
@@ -60,13 +64,20 @@ def test_sanitize_fts5_query_prefix_match():
 
 
 def test_sanitize_fts5_query_chinese():
-    # FTS5 unicode61 treats a run of CJK chars as ONE token, so the
-    # user input "开源" is preserved as a single prefix term — not
-    # expanded into per-character terms (that would be wrong: FTS5
-    # would then AND-match two tokens that don't exist).
+    # Schema v3: the index stores CJK text one char per token
+    # (fts5.segment_cjk), so a CJK run in the query becomes a
+    # phrase of consecutive single-char tokens. This is what makes
+    # mid-word matches ("协作" inside "开源协作新工具") possible —
+    # the pre-v3 form '"开源"*' could only match run prefixes.
     safe = sanitize_fts5_query("开源")
     assert safe is not None
-    assert safe == '"开源"*'
+    assert safe == '"开 源"'
+
+
+def test_sanitize_fts5_query_mixed_ascii_cjk():
+    # Mixed tokens split into an ASCII prefix term + a CJK phrase.
+    safe = sanitize_fts5_query("GPT5开源")
+    assert safe == '"GPT5"* "开 源"'
 
 
 def test_iter_token_hits_returns_clean_tokens():
@@ -149,11 +160,61 @@ async def test_fts5_finds_chinese(initialized):
 
 @pytest.mark.asyncio
 async def test_fts5_chinese_single_char(initialized):
-    """unicode61 tokenizes Chinese into single chars; the user
-    types one char and we still find a multi-char word."""
+    """The v3 index stores one token per CJK char; a single-char
+    query matches it anywhere in the text."""
     await _seed()
     items = await store.list_items(q="开", limit=10)
     assert any("开源" in (it.title_zh or "") for it in items)
+
+
+@pytest.mark.asyncio
+async def test_fts5_chinese_midword_substring(initialized):
+    """Regression (v3): '协作' sits in the MIDDLE of the CJK run
+    "开源协作新工具". The v2 whole-run prefix index could never
+    match this; per-char segmentation + phrase queries must."""
+    await _seed()
+    items = await store.list_items(q="协作", limit=10)
+    matched = [
+        it for it in items
+        if "协作" in (it.title_zh or "") or "协作" in (it.summary_en or "")
+    ]
+    assert matched, "mid-word Chinese substring should match"
+    # And "工具" (tail of the run) too.
+    items = await store.list_items(q="工具", limit=10)
+    assert any("工具" in (it.title_zh or "") for it in items)
+
+
+@pytest.mark.asyncio
+async def test_fts5_search_respects_source_and_status_filters(initialized):
+    """Regression: the FTS path used to silently DROP the source_id /
+    status filters, so searching with a sidebar filter active
+    returned unfiltered results."""
+    from prism_sidecar.models import ItemStatus
+
+    source = await _seed()
+    other = await store.create_source("Other", "rss", "https://y")
+    raw = RawItem(
+        url="https://b/post-1",
+        title="Andreas writes another post",
+        content="unrelated",
+        published_at=datetime(2026, 6, 2, tzinfo=timezone.utc),
+    )
+    other_item_id = await store.insert_item_from_raw(other, raw)
+
+    # Unfiltered search sees both sources' "Andreas" items.
+    items = await store.list_items(q="Andreas", limit=10)
+    assert len(items) == 2
+
+    # source_id filter narrows to one.
+    items = await store.list_items(q="Andreas", source_id=other.id, limit=10)
+    assert [it.id for it in items] == [other_item_id]
+
+    # status filter applies too.
+    await store.update_item_status(other_item_id, ItemStatus.starred)
+    items = await store.list_items(q="Andreas", status="starred", limit=10)
+    assert [it.id for it in items] == [other_item_id]
+    items = await store.list_items(q="Andreas", source_id=source.id, status="starred", limit=10)
+    assert items == []
 
 
 @pytest.mark.asyncio

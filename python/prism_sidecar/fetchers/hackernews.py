@@ -17,7 +17,9 @@ from typing import Any
 import httpx
 
 from prism_sidecar.config import FETCH_MAX_RETRIES, FETCH_RETRY_BACKOFF_SEC, FETCH_TIMEOUT_SEC
-from prism_sidecar.fetchers.base import Fetcher, RawItem
+from prism_sidecar.fetchers import _retry
+from prism_sidecar.fetchers._retry import retry_async
+from prism_sidecar.fetchers.base import FetchError, Fetcher, RawItem
 from prism_sidecar.models import ContentType, Source, SourceKind
 
 log = logging.getLogger(__name__)
@@ -96,33 +98,36 @@ class HackerNewsFetcher:
         client: httpx.AsyncClient,
         keyword: str,
     ) -> list[dict[str, Any]]:
+        """One keyword query with retry. Raises on unrecoverable failure —
+        the caller decides whether losing SOME keywords is fatal."""
         params = {
             "tags": "story",
             "query": keyword,
             "hitsPerPage": str(self._hits_per_page),
         }
-        last_exc: Exception | None = None
-        for attempt in range(1, self._max_retries + 2):
-            try:
-                resp = await client.get(ALGOLIA_ENDPOINT, params=params)
-                resp.raise_for_status()
-                data = resp.json()
-                return data.get("hits", [])
-            except (httpx.HTTPError, ValueError) as exc:
-                last_exc = exc
-                if attempt > self._max_retries:
-                    break
-                backoff = self._retry_backoff * (2 ** (attempt - 1))
-                log.warning(
-                    "[hn] query=%r failed (attempt %d/%d): %s — retry in %.1fs",
-                    keyword, attempt, self._max_retries + 1, exc, backoff,
-                )
-                await asyncio.sleep(backoff)
-        if last_exc:
-            log.error("[hn] query=%r gave up: %s", keyword, last_exc)
-        return []
 
-    async def fetch(self, source: Source) -> list[RawItem]:
+        async def _get() -> list[dict[str, Any]]:
+            await _retry.throttle.wait(ALGOLIA_ENDPOINT)
+            resp = await client.get(ALGOLIA_ENDPOINT, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("hits", [])
+
+        return await retry_async(
+            _get,
+            max_retries=self._max_retries,
+            backoff_base=self._retry_backoff,
+            describe=f"[hn] query={keyword!r}",
+        )
+
+    async def fetch(
+        self, source: Source, *, lookback_days: int | None = None
+    ) -> list[RawItem]:
+        # `lookback_days` is accepted (not just swallowed via **kwargs, so
+        # the signature stays self-documenting) but intentionally unused:
+        # HN has no per-item lookback concept here — v0.2a fetches
+        # all-time per keyword and relies on the url dedup in the store to
+        # avoid re-inserting old stories. See the module docstring.
         # Use keywords from config if provided, else default pool.
         cfg = source.config_json or {}
         keywords = cfg.get("keywords")
@@ -137,21 +142,37 @@ class HackerNewsFetcher:
         # HN; the de-dup on items.url keeps it from blowing up.
 
         merged: dict[str, dict[str, Any]] = {}
+        failed: list[tuple[str, Exception]] = []
         async with httpx.AsyncClient(
             timeout=self._timeout,
             follow_redirects=True,
             headers={"User-Agent": "PrismSidecar/0.2 (+https://github.com/zhengwn/prism)"},
         ) as client:
             for kw in queries:
-                hits = await self._search_once(client, kw)
+                # Per-keyword failures are "per-item" under the v0.2c
+                # contract — skip and continue. Only ALL keywords failing
+                # means the source (Algolia) is actually down.
+                try:
+                    hits = await self._search_once(client, kw)
+                except Exception as exc:  # noqa: BLE001
+                    log.error("[hn] query=%r gave up: %s", kw, exc)
+                    failed.append((kw, exc))
+                    continue
                 for hit in hits:
                     oid = hit.get("objectID")
                     if not oid:
                         continue
                     if oid not in merged:
                         merged[oid] = hit
-                # Be polite to Algolia.
+                # Be polite to Algolia (the throttle already spaces
+                # requests; this keeps the historical extra pause).
                 await asyncio.sleep(0.2)
+
+        if failed and len(failed) == len(queries):
+            raise FetchError(
+                f"all {len(queries)} Algolia queries failed "
+                f"(first: {failed[0][1]})",
+            ) from failed[0][1]
 
         raw_items: list[RawItem] = []
         for hit in merged.values():

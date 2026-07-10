@@ -153,7 +153,25 @@ _PROVIDER_ENV_KEY: dict[str, Optional[str]] = {
 
 
 def _empty_default() -> dict[str, Any]:
+    # Tauri injects PRISM_ACTIVE_PROVIDER when spawning the sidecar;
+    # honour it as the default when the marker file is missing or
+    # corrupt. (sidecar.rs always documented this fallback, but the
+    # sidecar never actually read the var before v0.2c.)
+    env_provider = os.environ.get("PRISM_ACTIVE_PROVIDER") or ""
+    if env_provider in {s.id for s in PROVIDER_SCHEMAS}:
+        return {"provider": env_provider}
     return {"provider": DEFAULT_PROVIDER_ID}
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Write JSON via tmp-file + rename so a concurrent reader (the
+    Tauri shell also writes/reads this file around sidecar restarts)
+    never sees a half-written file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, path)
 
 
 def load_active_provider() -> dict[str, Any]:
@@ -195,9 +213,7 @@ def write_default_if_missing() -> dict[str, Any]:
     """
     if not ACTIVE_PROVIDER_PATH.exists():
         try:
-            ACTIVE_PROVIDER_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with ACTIVE_PROVIDER_PATH.open("w", encoding="utf-8") as f:
-                json.dump(_empty_default(), f, indent=2, ensure_ascii=False)
+            _atomic_write_json(ACTIVE_PROVIDER_PATH, _empty_default())
             log.info(
                 "[settings] wrote default active provider to %s",
                 ACTIVE_PROVIDER_PATH,
@@ -228,9 +244,7 @@ def set_active_provider(
         payload["model"] = model
     if base_url:
         payload["base_url"] = base_url
-    ACTIVE_PROVIDER_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with ACTIVE_PROVIDER_PATH.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
+    _atomic_write_json(ACTIVE_PROVIDER_PATH, payload)
     log.info(
         "[settings] active provider updated: %s (model=%s, base_url=%s)",
         provider, model, base_url,

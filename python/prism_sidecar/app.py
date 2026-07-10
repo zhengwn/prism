@@ -32,6 +32,7 @@ from prism_sidecar.config import (
     DAILY_SYNC_HOUR,
     DAILY_SYNC_TZ,
     PRISM_DB_PATH,
+    SHUTDOWN_GRACE_SEC,
 )
 from prism_sidecar.data.fixtures import SEED_SOURCES
 from prism_sidecar.db import close_db, init_db
@@ -39,6 +40,7 @@ from prism_sidecar.distillers.registry import get_distiller as _registry_get_dis
 from prism_sidecar.models import (
     HealthInfo,
     ItemStatus,
+    ItemStatusPatch,
     KnowledgeItem,
     Source,
     SourceCreate,
@@ -47,8 +49,8 @@ from prism_sidecar.models import (
     SyncLogEntry,
     SyncResult,
 )
+from prism_sidecar.pipeline import orchestrator
 from prism_sidecar.pipeline.distill import list_pending_distill_ids, redistill_all_pending
-from prism_sidecar.pipeline.sync import run_source_sync
 
 # ---- Logging -------------------------------------------------------------
 
@@ -60,47 +62,25 @@ logging.basicConfig(
 log = logging.getLogger("prism-sidecar")
 
 
-# ---- Concurrency control ------------------------------------------------
-
-# We use an asyncio.Lock + a set of in-flight job IDs. The lock guarantees
-# serialised access to the set; the set itself is the source of truth for
-# "is anything running right now". The store-level `is_any_job_running` is
-# a belt-and-suspenders check that also catches jobs created from the
-# scheduler (or another process).
-_sync_lock: asyncio.Lock = asyncio.Lock()
-_inflight_jobs: set[str] = set()
-# Job IDs the user has explicitly cancelled via
-# POST /api/sync/{job_id}/cancel. The pipeline checks this set
-# between sources; if it finds its own id here, it stops
-# processing further sources (the current source's fetch is
-# allowed to finish — the alternative is leaving a half-
-# populated `items` row, which is uglier than a partial run).
+# ---- Sync-job orchestration ----------------------------------------------
 #
-# We keep the id in the set for the lifetime of the job so a
-# second /cancel call doesn't re-trigger a "cancelled" toast;
-# cleanup happens in the same try/finally that drops the job
-# from `_inflight_jobs`.
-_cancelled_jobs: set[str] = set()
-_is_app_ready: bool = False
-
-
-def is_job_cancelled(job_id: str) -> bool:
-    """Cheap, lock-free check used by the pipeline between sources."""
-    return job_id in _cancelled_jobs
-
-
-def consume_job_cancelled(job_id: str) -> bool:
-    """Atomic check-and-clear — returns True exactly once per cancel.
-
-    Used by the route handler to decide whether to surface a
-    'cancelled' status in the SyncResult instead of 'done'. After
-    this call, the cancel flag is gone (so a second consume returns
-    False even though the user did cancel).
-    """
-    if job_id in _cancelled_jobs:
-        _cancelled_jobs.discard(job_id)
-        return True
-    return False
+# The concurrency control (in-flight/cancelled job tracking) and the
+# actual "run the pipeline across N sources, track progress, handle
+# cancel" logic used to live inline here. It moved to
+# `pipeline/orchestrator.py` — this file grew past 900 lines mixing
+# route handlers with that orchestration, and the split mirrors the
+# existing `pipeline/distill.py` pattern for the redistill batch logic.
+#
+# `_inflight_jobs` and `run_all_sync_background` are re-exported here
+# (not copies — same underlying `set` / function object) for two
+# external contracts that named this module specifically:
+#   * `tests/test_api.py` asserts on `app._inflight_jobs` directly.
+#   * `scheduler.py` does a late `from prism_sidecar.app import
+#     run_all_sync_background` to avoid an import cycle.
+# New code should prefer calling `orchestrator.*` directly.
+_inflight_jobs = orchestrator.inflight_jobs
+run_all_sync_background = orchestrator.run_all_sync_background
+run_failed_retry_background = orchestrator.run_failed_retry_background
 
 # Cached reference to the most recently built distiller. The pipeline
 # builds a fresh distiller per job (so config changes between jobs are
@@ -113,323 +93,10 @@ def consume_job_cancelled(job_id: str) -> bool:
 # nicety, not a guarantee.
 _current_distiller: object | None = None
 
-
-def _has_inflight_job() -> bool:
-    return len(_inflight_jobs) > 0
-
-
-# ---- Pipeline helpers ---------------------------------------------------
-
-async def _run_pipeline_for_sources(
-    source_ids: list[str],
-    job_id: str,
-    *,
-    job_source_id: Optional[str] = None,
-) -> SyncResult:
-    """Run sync over a list of source ids, updating the job row as we go."""
-    items_new = 0
-    items_distilled = 0
-    sources_done = 0
-    sources_total = len(source_ids)
-    first_error: Optional[str] = None
-    started_at = datetime.now(timezone.utc)
-
-    # v0.2a+: open the live progress channel so the inbox can show a
-    # "distilling N items" bar while the pipeline is grinding. We
-    # don't know the exact `pending` count up front (it depends on
-    # how many NEW items each source yields), so we open with 0 and
-    # let the UI treat the running state as "indeterminate" — once
-    # the run ends the totals tell the truth.
-    await progress_store.begin_run(
-        pending=0,
-        started_at_iso=started_at.isoformat(),
-    )
-    cancelled = False
-    try:
-        for sid in source_ids:
-            # v0.2b+: poll the cancel flag between sources. We
-            # deliberately don't try to interrupt an in-flight
-            # `run_source_sync` call — its per-item loop is doing
-            # real work (HTTP fetch + LLM call) and yanking the
-            # rug would leave half-written rows. Letting the
-            # current source finish, then bailing before the
-            # next one, is the right granularity: the user
-            # wanted to STOP, not abort a single HTTP request.
-            if is_job_cancelled(job_id):
-                log.info("[sync] job=%s cancelled by user; stopping", job_id)
-                cancelled = True
-                break
-            source = await store.get_source(sid)
-            if source is None:
-                log.warning("[sync] job=%s source %s not found, skipping", job_id, sid)
-                continue
-            if not source.enabled:
-                log.info("[sync] job=%s source %s disabled, skipping", job_id, sid)
-                sources_done += 1
-                await store.update_job_progress(
-                    job_id,
-                    items_new=items_new,
-                    items_distilled=items_distilled,
-                    sources_done=sources_done,
-                )
-                await store.write_sync_log(
-                    source_id=sid,
-                    job_id=job_id,
-                    started_at=datetime.now(timezone.utc).isoformat(),
-                    finished_at=datetime.now(timezone.utc).isoformat(),
-                    items_new=0,
-                    items_distilled=0,
-                    error="disabled",
-                )
-                continue
-
-            try:
-                log_src_started = datetime.now(timezone.utc).isoformat()
-                stats = await run_source_sync(source)
-                sources_done += 1
-                items_new += stats.new_items
-                items_distilled += stats.distilled
-                err = stats.error
-                if err and first_error is None:
-                    first_error = f"{source.name}: {err}"
-                await store.update_job_progress(
-                    job_id,
-                    items_new=items_new,
-                    items_distilled=items_distilled,
-                    sources_done=sources_done,
-                )
-                await store.write_sync_log(
-                    source_id=sid,
-                    job_id=job_id,
-                    started_at=log_src_started,
-                    finished_at=datetime.now(timezone.utc).isoformat(),
-                    items_new=stats.new_items,
-                    items_distilled=stats.distilled,
-                    error=err,
-                )
-            except Exception as exc:  # noqa: BLE001
-                sources_done += 1
-                log.exception("[sync] job=%s source %s raised", job_id, sid)
-                if first_error is None:
-                    first_error = f"{source.name}: {exc!r}"
-                await store.update_job_progress(
-                    job_id,
-                    items_new=items_new,
-                    items_distilled=items_distilled,
-                    sources_done=sources_done,
-                )
-                await store.write_sync_log(
-                    source_id=sid,
-                    job_id=job_id,
-                    started_at=datetime.now(timezone.utc).isoformat(),
-                    finished_at=datetime.now(timezone.utc).isoformat(),
-                    items_new=0,
-                    items_distilled=0,
-                    error=str(exc),
-                )
-
-        # A user-cancelled run is a third outcome, distinct from
-        # done / error. The frontend uses this to render "Sync
-        # cancelled — X sources processed" instead of the green
-        # "done" toast or the red "error" toast. We still write
-        # the partial progress to the sync_jobs table so the
-        # user can pick up where they left off next time.
-        if cancelled:
-            final_status = SyncJobStatus.cancelled
-        elif first_error:
-            final_status = SyncJobStatus.error
-        else:
-            final_status = SyncJobStatus.done
-        # Eat the cancel flag now so the route handler can also
-        # report cancelled=True (it consumes the same flag).
-        consume_job_cancelled(job_id)
-        await store.finish_job(
-            job_id,
-            status=final_status,
-            items_new=items_new,
-            items_distilled=items_distilled,
-            sources_total=sources_total,
-            sources_done=sources_done,
-            error=first_error,
-        )
-        return SyncResult(
-            job_id=job_id,
-            source_id=job_source_id,
-            started_at=started_at,
-            finished_at=datetime.now(timezone.utc),
-            status=final_status,
-            items_new=items_new,
-            items_distilled=items_distilled,
-            sources_total=sources_total,
-            sources_done=sources_done,
-            error=first_error,
-        )
-    finally:
-        # Always close the live progress channel — happy path,
-        # key-invalid early bail, and exception. The UI relies on
-        # `is_running=false` to stop animating.
-        await progress_store.end_run(
-            finished_at_iso=datetime.now(timezone.utc).isoformat(),
-            error=first_error,
-        )
-
-
-async def _start_sync(source_id: Optional[str] = None) -> SyncResult:
-    """Common entry point for /api/sync and /api/sync/{id}.
-
-    v0.2a returned the final SyncResult synchronously — the
-    client blocked until every source was fetched + distilled.
-    v0.2b returns immediately with status=running, and the
-    pipeline runs as a background task. The client polls
-    /api/sync/{job_id} (or watches the SSE progress stream)
-    to learn when the job finishes, and POSTs
-    /api/sync/{job_id}/cancel to ask it to stop early.
-
-    Returns the in-flight SyncResult placeholder. Raises
-    HTTPException(409) if a sync is already running.
-    """
-    # Optimistic check (no lock). The inflight set survives the actual
-    # pipeline run, so this is the only check that can detect "another
-    # sync is mid-flight" while the lock is free.
-    if _has_inflight_job() or await store.is_any_job_running():
-        raise HTTPException(409, "another sync is already running")
-
-    # Lock just for the "create job + mark inflight" critical section.
-    # We release the lock before spawning the background task so
-    # other /api/sync requests can be served their 409 promptly.
-    async with _sync_lock:
-        if _has_inflight_job() or await store.is_any_job_running():
-            raise HTTPException(409, "another sync is already running")
-
-        if source_id is not None:
-            source = await store.get_source(source_id)
-            if not source:
-                raise HTTPException(404, f"source {source_id} not found")
-            source_ids = [source_id]
-            job_id = await store.create_job(source_id)
-        else:
-            all_sources = await store.list_sources()
-            source_ids = [s.id for s in all_sources if s.enabled]
-            job_id = await store.create_job(None)
-
-        _inflight_jobs.add(job_id)
-        started_at = datetime.now(timezone.utc)
-        # Background task: runs the pipeline, drops the inflight
-        # flag when finished. We DON'T await it here — the route
-        # returns immediately so the user can interact with the
-        # progress bar / cancel button.
-        # Errors are swallowed by the task itself (it logs them
-        # and the job row's error column gets the message), so we
-        # don't need an explicit error handler here.
-        _inflight_tasks[job_id] = asyncio.create_task(
-            _background_pipeline(
-                source_ids=source_ids,
-                job_id=job_id,
-                job_source_id=source_id,
-            )
-        )
-
-    # Return the in-flight placeholder. The client uses jobId
-    # to poll /api/sync/{job_id} for the real result.
-    return SyncResult(
-        job_id=job_id,
-        source_id=source_id,
-        started_at=started_at,
-        finished_at=None,
-        status=SyncJobStatus.running,
-        items_new=0,
-        items_distilled=0,
-        sources_total=len(source_ids),
-        sources_done=0,
-        error=None,
-    )
-
-
-# Background tasks need a registry so a sidecar restart doesn't
-# leave dangling "zombie" tasks in the asyncio runtime (they'd
-# be GC'd eventually but it's tidier to track them by id).
-_inflight_tasks: dict[str, asyncio.Task] = {}
-
-
-async def _background_pipeline(
-    *,
-    source_ids: list[str],
-    job_id: str,
-    job_source_id: Optional[str],
-) -> None:
-    """The actual pipeline wrapper, run as a background task.
-
-    Always cleans up `_inflight_jobs` and `_inflight_tasks` so a
-    crash here doesn't leave the sidecar thinking it's busy
-    forever. The body just calls the existing pipeline and
-    discards its return value (the pipeline already writes the
-    result to the sync_jobs row).
-    """
-    try:
-        await _run_pipeline_for_sources(
-            source_ids, job_id, job_source_id=job_source_id,
-        )
-    except Exception as exc:  # noqa: BLE001
-        # The pipeline catches its own per-source exceptions, so
-        # this branch only fires on truly unexpected errors (a
-        # DB write that raises, a programming bug, etc.). Mark
-        # the job as errored so the UI doesn't sit on "running"
-        # forever.
-        log.exception("[sync-bg] job=%s raised", job_id)
-        try:
-            await store.finish_job(
-                job_id,
-                status=SyncJobStatus.error,
-                error=f"pipeline crashed: {exc!r}",
-            )
-        except Exception:  # pragma: no cover
-            log.exception("[sync-bg] failed to mark job=%s as error", job_id)
-    finally:
-        _inflight_jobs.discard(job_id)
-        _inflight_tasks.pop(job_id, None)
-
-
-async def run_all_sync_background() -> None:
-    """Background entry point used by the scheduler.
-
-    Failures are logged but never raised — the scheduler will retry on the
-    next cron tick.
-    """
-    if not _is_app_ready:
-        log.warning("[scheduler] app not ready; skipping scheduled sync")
-        return
-    if _has_inflight_job() or await store.is_any_job_running():
-        log.info("[scheduler] sync already running; skipping scheduled run")
-        return
-    try:
-        async with _sync_lock:
-            if _has_inflight_job() or await store.is_any_job_running():
-                return
-            sources = await store.list_sources()
-            source_ids = [s.id for s in sources if s.enabled]
-            if not source_ids:
-                log.info("[scheduler] no enabled sources; nothing to do")
-                return
-            job_id = await store.create_job(None)
-            _inflight_jobs.add(job_id)
-        # Pipeline runs without the lock held.
-        try:
-            log.info(
-                "[scheduler] daily sync starting (job=%s, %d sources)",
-                job_id, len(source_ids),
-            )
-            await _run_pipeline_for_sources(source_ids, job_id)
-        finally:
-            _inflight_jobs.discard(job_id)
-    except Exception as exc:  # noqa: BLE001
-        log.exception("[scheduler] daily sync failed: %s", exc)
-
-
 # ---- Lifespan ------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _is_app_ready
     log.info("[prism-sidecar] v%s starting up", __version__)
     log.info("[prism-sidecar] db: %s", PRISM_DB_PATH)
 
@@ -446,6 +113,11 @@ async def lifespan(app: FastAPI):
     )
 
     await init_db()
+    # Crash recovery: a job row left in 'running' by a killed sidecar
+    # would make is_any_job_running() true forever and 409 every
+    # future sync. No job can be running this early in startup, so
+    # flip the orphans to 'error' before anything else looks at them.
+    await store.fail_orphan_running_jobs()
     await store.ensure_default_sources(SEED_SOURCES)
 
     if DAILY_SYNC_ENABLED:
@@ -453,7 +125,7 @@ async def lifespan(app: FastAPI):
     else:
         log.info("[prism-sidecar] daily sync disabled via env")
 
-    _is_app_ready = True
+    orchestrator.is_app_ready = True
     log.info(
         "[prism-sidecar] ready on http://127.0.0.1:8765 (daily_sync=%02d:00 %s)",
         DAILY_SYNC_HOUR, DAILY_SYNC_TZ,
@@ -462,9 +134,15 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        _is_app_ready = False
+        orchestrator.is_app_ready = False
         log.info("[prism-sidecar] shutting down")
+        # Order matters: stop the scheduler first (no NEW jobs), then
+        # drain in-flight sync work (jobs stop at their next per-source
+        # checkpoint and persist partial progress), THEN close the db —
+        # closing it under a mid-write pipeline would corrupt the very
+        # progress we're trying to save. See orchestrator.drain_inflight.
         scheduler.shutdown_scheduler()
+        await orchestrator.drain_inflight(SHUTDOWN_GRACE_SEC)
         await close_db()
 
 
@@ -573,6 +251,25 @@ async def get_item(item_id: str) -> KnowledgeItem:
     return it
 
 
+@app.patch(
+    "/api/items/{item_id}",
+    response_model=KnowledgeItem,
+    response_model_by_alias=True,
+)
+async def patch_item_status(item_id: str, payload: ItemStatusPatch) -> KnowledgeItem:
+    """Set an item's status (unread / read / starred / archived).
+
+    This is the write path behind the inbox's status filters — the
+    filters (and the `ItemStatusPatch` model) existed since v0.1 but
+    there was no endpoint to actually change a status, so `starred` /
+    `archived` were permanently empty.
+    """
+    updated = await store.update_item_status(item_id, payload.status)
+    if not updated:
+        raise HTTPException(404, f"item {item_id} not found")
+    return updated
+
+
 # ---- Sync ----------------------------------------------------------------
 
 @app.get(
@@ -592,10 +289,11 @@ async def sync_history(limit: int = Query(10, ge=1, le=200)) -> list[SyncLogEntr
 async def trigger_sync() -> SyncResult:
     """Run the full pipeline over all enabled sources.
 
-    Synchronous: returns only after the job is finished. Concurrent calls
-    return 409.
+    v0.2b+: returns immediately with status=running; the pipeline runs
+    as a background task. Poll GET /api/sync/{job_id} for the result.
+    Concurrent calls return 409.
     """
-    return await _start_sync(source_id=None)
+    return await orchestrator.start_sync(source_id=None)
 
 
 @app.post(
@@ -605,7 +303,7 @@ async def trigger_sync() -> SyncResult:
 )
 async def trigger_source_sync(source_id: str) -> SyncResult:
     """Run the pipeline for a single source."""
-    return await _start_sync(source_id=source_id)
+    return await orchestrator.start_sync(source_id=source_id)
 
 
 @app.get(
@@ -643,7 +341,7 @@ async def cancel_sync_job(job_id: str) -> dict:
             409,
             f"job {job_id} is already {job.status.value}; nothing to cancel",
         )
-    _cancelled_jobs.add(job_id)
+    orchestrator.cancelled_jobs.add(job_id)
     log.info("[sync-cancel] user cancelled job=%s", job_id)
     return {"jobId": job_id, "cancelled": True}
 
@@ -702,10 +400,14 @@ async def distill_status_stream():
     events, not 5000). Between real events we emit an SSE comment
     frame every 15s to keep the connection alive.
 
-    The stream ends when the current run ends (``isRunning=false``
-    is the last event); the EventSource auto-reconnects but the
-    client should check the flag and close the connection on its
-    end so it doesn't keep reconnecting forever.
+    Connection lifecycle: while no run is in flight the stream stays
+    OPEN (kept warm by the keepalive comments) — it does NOT close on
+    the initial idle snapshot. It closes only after a run that this
+    consumer observed as running has ended (the ``isRunning=false``
+    transition event is the last one), at which point the browser's
+    EventSource reconnects and the cycle repeats. Closing on every
+    idle snapshot (the pre-v0.2c behaviour) made the EventSource
+    reconnect every ~3s for the whole app lifetime.
 
     Wire format
     -----------
@@ -723,12 +425,20 @@ async def distill_status_stream():
         pass
 
     async def event_gen():
+        import json as _json
+
         last_keepalive = time.monotonic()
+        # Whether THIS consumer has seen the run in a running state.
+        # We only close the stream on a running→idle transition; the
+        # initial idle snapshot must NOT close it, otherwise an idle
+        # app makes the EventSource reconnect every ~3s forever.
+        had_running = False
         try:
             # Hard timeout safety: if a pipeline run hangs forever
             # (e.g. distiller deadlock), close the connection so
             # the browser sees a clean disconnect and can decide
-            # whether to reconnect.
+            # whether to reconnect. For idle connections this just
+            # means one clean reconnect every 30 minutes.
             deadline = time.monotonic() + _SSE_HARD_TIMEOUT_SEC
             while True:
                 now = time.monotonic()
@@ -744,13 +454,14 @@ async def distill_status_stream():
                     # Loop back; the keepalive check above will
                     # emit a comment if needed.
                     continue
-                import json as _json
 
                 yield f"data: {_json.dumps(snap, ensure_ascii=False)}\n\n"
-                # If the run is done, this is the final event —
-                # close the stream so the client doesn't sit on
-                # a quiet connection.
-                if not snap.get("isRunning", False):
+                if snap.get("isRunning", False):
+                    had_running = True
+                elif had_running:
+                    # Running → idle transition: final event of this
+                    # run — close so the client doesn't sit on a
+                    # quiet connection; it reconnects for the next.
                     break
         finally:
             progress_store.unsubscribe(queue)
@@ -793,6 +504,12 @@ async def trigger_redistill(batch_limit: int = Query(1000, ge=1, le=5000)) -> Re
             503,
             f"distiller is not configured (set the API key in Settings for {active_provider})",
         )
+    # Mutual exclusion with sync (and with a second redistill): both
+    # drive the same progress_store and the same distiller quota, and
+    # a concurrent begin_run/end_run pair would clobber the other
+    # run's progress state (and prematurely close its SSE framing).
+    if orchestrator.inflight_jobs or orchestrator.redistill_running:
+        raise HTTPException(409, "a sync or redistill is already running")
     # We know the `pending` count up-front for redistill: it's the
     # number of items in the queue right now. Use that to drive a
     # proper determinate progress bar (X / pending) in the UI.
@@ -800,6 +517,7 @@ async def trigger_redistill(batch_limit: int = Query(1000, ge=1, le=5000)) -> Re
 
     pending_ids = await list_pending_distill_ids()
     capped_pending = min(len(pending_ids), batch_limit)
+    orchestrator.redistill_running = True
     await progress_store.begin_run(
         pending=capped_pending,
         started_at_iso=datetime.now(timezone.utc).isoformat(),
@@ -808,6 +526,7 @@ async def trigger_redistill(batch_limit: int = Query(1000, ge=1, le=5000)) -> Re
     try:
         result = await redistill_all_pending(batch_limit=batch_limit)
     finally:
+        orchestrator.redistill_running = False
         await progress_store.end_run(
             finished_at_iso=datetime.now(timezone.utc).isoformat(),
             error=result.error if result is not None else None,
@@ -831,7 +550,12 @@ async def trigger_redistill(batch_limit: int = Query(1000, ge=1, le=5000)) -> Re
     response_model_by_alias=True,
 )
 async def list_provider_schemas() -> list[settings.ProviderSchema]:
-    """Static metadata describing all 5 providers' Settings-UI shape.
+    """Static metadata describing each supported provider's Settings-UI shape.
+
+    v0.2b pruned the provider list down to 2 (DeepSeek + MiniMax) — see
+    `distillers/registry.py:PROVIDERS`. This docstring used to say "all 5
+    providers"; kept generic now so it doesn't drift again if the count
+    changes.
 
     The frontend uses this to decide which input fields to render
     after the user picks a provider from the dropdown.

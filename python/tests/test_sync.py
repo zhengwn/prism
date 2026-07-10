@@ -194,8 +194,10 @@ async def test_run_source_sync_uses_wide_lookback_on_first_run(monkeypatch):
 @pytest.mark.asyncio
 async def test_run_source_sync_aborts_on_key_invalid(monkeypatch):
     """When the distiller raises DistillerKeyInvalid, the source-level
-    sync should mark stats.key_invalid=True and stop processing more
-    raw items for that source (don't burn the dead key)."""
+    sync marks stats.key_invalid=True and stops DISTILLING (don't burn
+    the dead key) — but keeps INSERTING the remaining raw items so
+    they stay pending for a later redistill. The pre-fix `break`
+    discarded every raw item after the failure point."""
     from prism_sidecar.fetchers import registry
 
     await init_db()
@@ -215,9 +217,180 @@ async def test_run_source_sync_aborts_on_key_invalid(monkeypatch):
 
     assert stats.key_invalid is True
     assert "key_invalid" in (stats.error or "")
-    # Only the first raw is consumed before the key-invalid abort.
+    # Nothing was distilled…
     assert stats.distilled == 0
-    # Items are still inserted even though they didn't get distilled —
-    # they stay pending for a later re-distill pass.
+    # …but ALL fetched items were inserted (pending distillation).
+    assert stats.new_items == 3
     items = await store.list_items(source_id=source.id)
-    assert len(items) >= 1
+    assert len(items) == 3
+    assert all(it.distilled_at is None for it in items)
+    # The distill-level error stays visible on the source row.
+    refreshed = await store.get_source(source.id)
+    assert refreshed is not None and "key_invalid" in (refreshed.last_error or "")
+
+
+# ---- v0.2c: FetchError contract + failure cooldown -----------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_error_records_last_error_and_salvages_partials(monkeypatch):
+    """整源 fetch 失败:last_error 落库、partial_items 不浪费、
+    fail_streak 记账——这是"错误重新可见"设计的核心验收 case。"""
+    from prism_sidecar.fetchers import registry
+    from prism_sidecar.fetchers.base import FetchError
+    from prism_sidecar.pipeline.sync import get_fail_streak, source_in_cooldown
+
+    await init_db()
+    source = await store.create_source("S", "rss", "https://x")
+
+    class PartialFailFetcher:
+        kind = SourceKind.rss
+
+        async def fetch(self, source: Source, lookback_days: int = 7) -> list[RawItem]:
+            raise FetchError(
+                "feed died mid-listing",
+                partial_items=[_raw("https://example.com/salvaged", "Salvaged")],
+            )
+
+    monkeypatch.setattr(registry, "get_fetcher", lambda src: PartialFailFetcher())
+
+    stats = await run_source_sync(source, distiller=FakeDistiller())
+
+    # Error is visible in stats AND on the source row.
+    assert stats.error is not None and "feed died" in stats.error
+    refreshed = await store.get_source(source.id)
+    assert refreshed is not None and "feed died" in (refreshed.last_error or "")
+
+    # The partial item was still inserted + distilled.
+    items = await store.list_items(source_id=source.id)
+    assert len(items) == 1
+    assert items[0].url == "https://example.com/salvaged"
+
+    # Failure streak + cooldown recorded.
+    assert await get_fail_streak(source.id) == 1
+    assert await source_in_cooldown(source.id) is True
+
+
+@pytest.mark.asyncio
+async def test_fetch_error_does_not_consume_first_sync_window(monkeypatch):
+    """fetch 失败的那次同步不该消耗 first-sync 宽窗口。"""
+    from prism_sidecar.config import INITIAL_FETCH_LOOKBACK_DAYS
+    from prism_sidecar.fetchers import registry
+    from prism_sidecar.fetchers.base import FetchError
+
+    await init_db()
+    source = await store.create_source("S", "rss", "https://x")
+
+    class AlwaysFail:
+        kind = SourceKind.rss
+        last_lookback_days: int | None = None
+
+        async def fetch(self, source: Source, lookback_days: int = 7) -> list[RawItem]:
+            type(self).last_lookback_days = lookback_days
+            raise FetchError("boom")
+
+    monkeypatch.setattr(registry, "get_fetcher", lambda src: AlwaysFail())
+
+    await run_source_sync(source, distiller=None)
+    assert AlwaysFail.last_lookback_days == INITIAL_FETCH_LOOKBACK_DAYS
+    # Second attempt STILL gets the wide window — it never succeeded.
+    await run_source_sync(source, distiller=None)
+    assert AlwaysFail.last_lookback_days == INITIAL_FETCH_LOOKBACK_DAYS
+
+
+@pytest.mark.asyncio
+async def test_success_clears_fail_streak_and_cooldown(monkeypatch):
+    from prism_sidecar.fetchers import registry
+    from prism_sidecar.fetchers.base import FetchError
+    from prism_sidecar.pipeline.sync import (
+        get_fail_streak,
+        source_in_cooldown,
+        source_retry_due,
+    )
+
+    await init_db()
+    source = await store.create_source("S", "rss", "https://x")
+
+    class FailOnce:
+        kind = SourceKind.rss
+        calls = 0
+
+        async def fetch(self, source: Source, lookback_days: int = 7) -> list[RawItem]:
+            type(self).calls += 1
+            if type(self).calls == 1:
+                raise FetchError("first hit fails")
+            return [_raw("https://example.com/ok", "OK")]
+
+    monkeypatch.setattr(registry, "get_fetcher", lambda src: FailOnce())
+
+    await run_source_sync(source, distiller=None)
+    assert await get_fail_streak(source.id) == 1
+
+    await run_source_sync(source, distiller=None)
+    assert await get_fail_streak(source.id) == 0
+    assert await source_in_cooldown(source.id) is False
+    assert await source_retry_due(source.id) is False
+
+
+@pytest.mark.asyncio
+async def test_cooldown_escalates_with_streak(monkeypatch):
+    """连续失败 → 冷却窗口指数增长,封顶 24h;non-retryable 直接 24h。"""
+    from datetime import timedelta
+
+    from prism_sidecar.pipeline.sync import (
+        _retry_after_key,
+        get_fail_streak,
+        record_sync_failure,
+    )
+    from prism_sidecar.store import get_meta
+
+    await init_db()
+    source = await store.create_source("S", "rss", "https://x")
+
+    async def _cooldown_hours() -> float:
+        raw = await get_meta(_retry_after_key(source.id))
+        until = datetime.fromisoformat(raw)
+        return (until - datetime.now(timezone.utc)) / timedelta(hours=1)
+
+    await record_sync_failure(source.id)          # streak 1 → 2h
+    assert 1.9 < await _cooldown_hours() <= 2.0
+    await record_sync_failure(source.id)          # streak 2 → 4h
+    assert 3.9 < await _cooldown_hours() <= 4.0
+    for _ in range(4):                            # streak 6 → capped 24h
+        await record_sync_failure(source.id)
+    assert 23.9 < await _cooldown_hours() <= 24.0
+    assert await get_fail_streak(source.id) == 6
+
+    # Non-retryable failure jumps straight to the cap.
+    await record_sync_failure("other_src", retryable=False)
+    raw = await get_meta(_retry_after_key("other_src"))
+    until = datetime.fromisoformat(raw)
+    hours = (until - datetime.now(timezone.utc)) / timedelta(hours=1)
+    assert 23.9 < hours <= 24.0
+
+
+@pytest.mark.asyncio
+async def test_real_rss_fetcher_through_pipeline(monkeypatch):
+    """真实 RSSFetcher 走通 run_source_sync 记账路径——不是 Fake。
+    (test_sync 全用 Fake fetcher 曾漏掉 lookback_days 签名 bug。)"""
+    import respx
+    from httpx import Response
+
+    from prism_sidecar.fetchers import registry
+    from prism_sidecar.fetchers.rss import RSSFetcher
+
+    await init_db()
+    source = await store.create_source("S", "rss", "https://feed.example.com/rss.xml")
+
+    monkeypatch.setattr(registry, "get_fetcher", lambda src: RSSFetcher(max_retries=0))
+
+    with respx.mock() as mock:
+        mock.get("https://feed.example.com/rss.xml").mock(
+            return_value=Response(500, text="server error")
+        )
+        stats = await run_source_sync(source, distiller=None)
+
+    # The real fetcher raised FetchError; the pipeline recorded it.
+    assert stats.error is not None and "fetch" in stats.error
+    refreshed = await store.get_source(source.id)
+    assert refreshed is not None and refreshed.last_error

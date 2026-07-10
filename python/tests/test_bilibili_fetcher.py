@@ -28,6 +28,7 @@ import respx
 from httpx import Response
 
 from prism_sidecar.fetchers import bilibili as bili_mod
+from prism_sidecar.fetchers.base import FetchError
 from prism_sidecar.fetchers.bilibili import BilibiliFetcher
 from prism_sidecar.models import Source, SourceKind
 
@@ -487,32 +488,36 @@ async def test_no_subtitle_returns_title_only(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_missing_config_returns_empty(monkeypatch):
-    """没有 mid / bvid / keyword → 返回空列表,不发任何请求。"""
+async def test_missing_config_raises_non_retryable(monkeypatch):
+    """没有 mid / bvid / keyword → FetchError(retryable=False)（v0.2c 契约:
+    配置错误属于整源失败,且重试也修不好）。"""
     _install_fake_bilibili(monkeypatch)
 
     fetcher = BilibiliFetcher(inter_video_sleep=0)
-    items = await fetcher.fetch(
-        Source(
-            id="src_empty",
-            name="empty",
-            kind=SourceKind.bilibili,
-            url="https://example.com",
-            enabled=True,
-            config_json={},
-        ),
-    )
-    assert items == []
+    with pytest.raises(FetchError) as exc_info:
+        await fetcher.fetch(
+            Source(
+                id="src_empty",
+                name="empty",
+                kind=SourceKind.bilibili,
+                url="https://example.com",
+                enabled=True,
+                config_json={},
+            ),
+        )
+    assert exc_info.value.retryable is False
 
 
 @pytest.mark.asyncio
-async def test_keyword_mode_is_skipped_in_poc(monkeypatch):
-    """keyword 是 v0.2c TODO,当前跳过 + log warning。"""
+async def test_keyword_mode_raises_non_retryable(monkeypatch):
+    """keyword 是 v0.2c TODO——现在会作为整源错误浮出（用户能在
+    sources.last_error 看到"未实现"而不是永远的静默空结果）。"""
     _install_fake_bilibili(monkeypatch)
 
     fetcher = BilibiliFetcher(inter_video_sleep=0)
-    items = await fetcher.fetch(_make_source(keyword="AI 论文"))
-    assert items == []
+    with pytest.raises(FetchError) as exc_info:
+        await fetcher.fetch(_make_source(keyword="AI 论文"))
+    assert exc_info.value.retryable is False
 
 
 @pytest.mark.asyncio

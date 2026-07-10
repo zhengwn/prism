@@ -10,7 +10,6 @@ side effect.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Optional
 
@@ -25,15 +24,31 @@ log = logging.getLogger(__name__)
 _scheduler: Optional[AsyncIOScheduler] = None
 
 
-def _safe_run_all_sync() -> None:
-    """Wrap the coroutine so the scheduler can fire it from sync context."""
+async def _safe_run_all_sync() -> None:
+    """Coroutine job the scheduler fires directly on the event loop.
+
+    This MUST be a coroutine function: APScheduler's ``AsyncIOExecutor``
+    schedules coroutine jobs on the running loop, but runs *sync*
+    functions in a thread-pool worker via ``run_in_executor``. The old
+    sync wrapper here called ``asyncio.get_event_loop()`` from that
+    worker thread, which raises ``RuntimeError`` on Python 3.10+ (no
+    event loop in a non-main thread) — so the daily sync silently never
+    ran. Keeping the late import inside the coroutine still avoids the
+    app.py import cycle.
+    """
     from prism_sidecar.app import run_all_sync_background  # late import: avoid cycle
 
-    try:
-        asyncio.get_event_loop().create_task(run_all_sync_background())
-    except RuntimeError:
-        # No running loop (e.g. inside tests that tear down the loop). Skip.
-        log.warning("[scheduler] no event loop; skipping scheduled sync")
+    await run_all_sync_background()
+
+
+async def _safe_run_failed_retry() -> None:
+    """Hourly coroutine job: retry known-failed sources past cooldown.
+
+    Same late-import + coroutine constraints as `_safe_run_all_sync`.
+    """
+    from prism_sidecar.app import run_failed_retry_background  # late import: avoid cycle
+
+    await run_failed_retry_background()
 
 
 def start_scheduler() -> AsyncIOScheduler:
@@ -49,6 +64,18 @@ def start_scheduler() -> AsyncIOScheduler:
             CronTrigger(hour=DAILY_SYNC_HOUR, minute=0, timezone=DAILY_SYNC_TZ),
             id="daily_sync",
             name=f"Daily sync at {DAILY_SYNC_HOUR:02d}:00 {DAILY_SYNC_TZ}",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        # v0.2c: hourly failure-retry sweep. Runs at :30 so it never
+        # collides with the daily job at :00; the orchestrator's lock
+        # checks make an accidental overlap a harmless no-op anyway.
+        _scheduler.add_job(
+            _safe_run_failed_retry,
+            CronTrigger(minute=30, timezone=DAILY_SYNC_TZ),
+            id="failed_retry_sync",
+            name="Hourly retry of failed sources (past cooldown)",
             replace_existing=True,
             max_instances=1,
             coalesce=True,

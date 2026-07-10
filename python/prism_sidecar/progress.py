@@ -8,8 +8,8 @@ Why a module-level singleton (not a Redis / SQLite row)
   restart is fine — the user just sees a brief "indeterminate" state
   and then nothing.
 * Per-pipeline work is serialised by the asyncio lock in
-  ``app._sync_lock`` / ``app._inflight_jobs``, so a single in-process
-  counter is always consistent.
+  ``pipeline.orchestrator.sync_lock`` / ``.inflight_jobs``, so a single
+  in-process counter is always consistent.
 * Multiple concurrent readers (the SSE stream consumers) just need
   a consistent snapshot; we serve each consumer from the latest
   ``Dict`` on every event.

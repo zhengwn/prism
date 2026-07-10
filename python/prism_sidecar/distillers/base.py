@@ -16,7 +16,11 @@ fills in two things:
   providers like Ollama)
 
 Everything else — the prompt, JSON parsing, retry loop, 401 detection —
-lives on the base class so the 5 providers stay in lock-step.
+lives on the base class so every registered provider stays in lock-step.
+(v0.2b pruned the active provider list down to 2 — DeepSeek + MiniMax,
+see `distillers/registry.py:PROVIDERS` — but the base class stays
+provider-count-agnostic by design, so re-adding a third litellm-backed
+provider is still a small, self-contained change.)
 
 `LitellmDistiller` is intentionally duck-typed (no ABC) so tests can
 build a one-off subclass without going through the ABC machinery.
@@ -89,6 +93,33 @@ PROMPT_TEMPLATE = """你是一名 AI 行业分析师。请把以下内容提炼�
 """
 
 
+# X (Twitter) is short-form: a single tweet or a thread stitched together
+# by the bridge. The general template assumes an article and tends to pad
+# a 280-char post into a bloated "summary". This prompt keeps it tight and
+# thread-aware. Wired in `_build_prompt` via feed_kind == "x" (v0.2c).
+X_PROMPT_TEMPLATE = """你是一名 AI 行业分析师。下面是来自 X（推特）的短文本内容（可能是单条推文，也可能是一个 thread 拼接而成）。请提炼成结构化知识单元。
+注意：内容很短，不要脑补或夸大；如果是 thread，请综合整条线索的核心观点。
+要求：
+1. title_zh：用一句中文概括这条推文/thread 的核心（保留产品名/技术名原文；不要照搬 @用户名）
+2. summary_zh：1-2 句中文总结，只保留真正的信息点，忽略寒暄和 hashtag 堆砌
+3. key_points_zh：1-3 条中文关键点（内容确实很短时给 1 条也可以）
+4. tags_zh：2-4 个中文标签
+
+作者：{author}
+原文内容：{content}
+
+严格返回 JSON（必须是合法 JSON，**字符串内的双引号必须用反斜杠转义成 \\"，不得使用中文全角引号 " "**）。
+格式示例：
+{{"title_zh": "...", "summary_zh": "...", "key_points_zh": [...], "tags_zh": [...]}}
+"""
+
+
+def _is_x(raw: RawItem) -> bool:
+    """True for X/Twitter items (feed_kind stamped by XFetcher)."""
+    meta_kind = (raw.metadata or {}).get("feed_kind")
+    return isinstance(meta_kind, str) and meta_kind.lower() == "x"
+
+
 def _build_prompt(raw: RawItem) -> str:
     # B 站长字幕走专属 prompt + 截断策略（v0.2c+）。其他 source kind
     # 继续走原来的通用模板。
@@ -103,6 +134,11 @@ def _build_prompt(raw: RawItem) -> str:
     # Cap content to keep token usage sane.
     if len(content) > 6000:
         content = content[:6000] + "…"
+    if _is_x(raw):
+        return X_PROMPT_TEMPLATE.format(
+            author=raw.author or (raw.metadata or {}).get("handle") or "—",
+            content=content,
+        )
     return PROMPT_TEMPLATE.format(title_en=raw.title, content=content)
 
 
@@ -323,7 +359,8 @@ _looks_like_key_invalid = looks_like_key_invalid
 
 
 class LitellmDistiller:
-    """Shared litellm-backed distiller for all 5 providers.
+    """Shared litellm-backed distiller for every registered provider
+    (currently DeepSeek + MiniMax — see `distillers/registry.py`).
 
     Subclasses must set the class attributes (or override the instance
     attributes in ``__init__``):

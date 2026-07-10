@@ -22,7 +22,9 @@ from prism_sidecar.config import (
     FETCH_RETRY_BACKOFF_SEC,
     FETCH_TIMEOUT_SEC,
 )
-from prism_sidecar.fetchers.base import Fetcher, RawItem
+from prism_sidecar.fetchers import _retry
+from prism_sidecar.fetchers._retry import retry_async
+from prism_sidecar.fetchers.base import FetchError, Fetcher, RawItem
 from prism_sidecar.models import ContentType, Source, SourceKind
 
 log = logging.getLogger(__name__)
@@ -131,8 +133,7 @@ class RSSFetcher:
         self._lookback = timedelta(days=lookback_days)
 
     async def _download(self, url: str) -> bytes:
-        """GET with retry. Returns body bytes."""
-        last_exc: Exception | None = None
+        """GET with retry (shared `retry_async` helper). Returns body bytes."""
         async with httpx.AsyncClient(
             timeout=self._timeout,
             follow_redirects=True,
@@ -141,34 +142,38 @@ class RSSFetcher:
                 "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8",
             },
         ) as client:
-            for attempt in range(1, self._max_retries + 2):  # retries + 1
-                try:
-                    resp = await client.get(url)
-                    resp.raise_for_status()
-                    return resp.content
-                except (httpx.HTTPError, httpx.StreamError) as exc:
-                    last_exc = exc
-                    if attempt > self._max_retries:
-                        break
-                    backoff = self._retry_backoff * (2 ** (attempt - 1))
-                    log.warning(
-                        "[rss] fetch %s failed (attempt %d/%d): %s — retry in %.1fs",
-                        url, attempt, self._max_retries + 1, exc, backoff,
-                    )
-                    await asyncio.sleep(backoff)
-        assert last_exc is not None
-        raise last_exc
 
-    async def fetch(self, source: Source) -> list[RawItem]:
+            async def _get() -> bytes:
+                await _retry.throttle.wait(url)
+                resp = await client.get(url)
+                resp.raise_for_status()
+                return resp.content
+
+            return await retry_async(
+                _get,
+                max_retries=self._max_retries,
+                backoff_base=self._retry_backoff,
+                describe=f"[rss] {url}",
+            )
+
+    async def fetch(
+        self, source: Source, *, lookback_days: int | None = None
+    ) -> list[RawItem]:
+        # v0.2c contract: whole-source failures raise FetchError so the
+        # pipeline can record sources.last_error (previously we returned
+        # [] and the outage was indistinguishable from a quiet feed).
         if not source.url:
-            log.warning("[rss] source %s has no url; skipping", source.id)
-            return []
+            raise FetchError(
+                f"source {source.id} has no url", retryable=False,
+            )
 
         try:
             body = await self._download(source.url)
+        except FetchError:
+            raise
         except Exception as exc:
             log.error("[rss] %s (%s) fetch failed: %s", source.name, source.id, exc)
-            return []
+            raise FetchError(f"download failed: {exc}") from exc
 
         # feedparser is sync, but cheap; run in a thread to avoid blocking
         # the loop.
@@ -176,18 +181,18 @@ class RSSFetcher:
             parsed = await asyncio.to_thread(feedparser.parse, body)
         except Exception as exc:
             log.error("[rss] %s feedparser error: %s", source.name, exc)
-            return []
+            raise FetchError(f"feed parse crashed: {exc}") from exc
 
         if getattr(parsed, "bozo", False) and not parsed.entries:
-            log.warning(
-                "[rss] %s feed parse failed: %s",
-                source.name,
-                getattr(parsed, "bozo_exception", "unknown"),
-            )
-            return []
+            bozo = getattr(parsed, "bozo_exception", "unknown")
+            log.warning("[rss] %s feed parse failed: %s", source.name, bozo)
+            raise FetchError(f"feed unparseable: {bozo}")
 
+        lookback = (
+            timedelta(days=lookback_days) if lookback_days is not None else self._lookback
+        )
         now = datetime.now(timezone.utc)
-        cutoff = now - self._lookback
+        cutoff = now - lookback
         raw_items: list[RawItem] = []
 
         for entry in parsed.entries:
@@ -200,25 +205,42 @@ class RSSFetcher:
                 # Older than the lookback window — skip.
                 continue
 
-            title = (getattr(entry, "title", "") or "").strip() or link
-            body_text = _strip_html(_entry_content(entry))
-            if not body_text:
-                body_text = title  # worst case: LLM has the title to work with
-
-            raw_items.append(
-                RawItem(
-                    url=link,
-                    title=title,
-                    content=body_text[:8000],  # bound the prompt payload
-                    published_at=published_at,
-                    author=_entry_author(entry),
-                    content_type=ContentType.article,
-                    metadata={"source_name": source.name, "feed_kind": "rss"},
-                )
-            )
+            raw = self._entry_to_raw(entry, source, link=link, published_at=published_at)
+            if raw is not None:
+                raw_items.append(raw)
 
         log.info("[rss] %s: %d items (of %d entries)", source.name, len(raw_items), len(parsed.entries))
         return raw_items
+
+    def _entry_to_raw(
+        self,
+        entry: Any,
+        source: Source,
+        *,
+        link: str,
+        published_at: datetime,
+    ) -> RawItem | None:
+        """Build one RawItem from a feedparser entry.
+
+        Extracted as a hook (v0.2c) so RSS-family fetchers — Podcast is
+        the first — can subclass RSSFetcher and enrich the item
+        (enclosure, duration, …) without duplicating the download /
+        parse / lookback plumbing in `fetch`.
+        """
+        title = (getattr(entry, "title", "") or "").strip() or link
+        body_text = _strip_html(_entry_content(entry))
+        if not body_text:
+            body_text = title  # worst case: LLM has the title to work with
+
+        return RawItem(
+            url=link,
+            title=title,
+            content=body_text[:8000],  # bound the prompt payload
+            published_at=published_at,
+            author=_entry_author(entry),
+            content_type=ContentType.article,
+            metadata={"source_name": source.name, "feed_kind": "rss"},
+        )
 
 
 __all__ = ["RSSFetcher", "_strip_html"]

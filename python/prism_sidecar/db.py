@@ -30,7 +30,14 @@ PRISM_DATA_DIR = _config.PRISM_DATA_DIR
 # v2: add FTS5 virtual table `items_fts` for full-text search across
 #     title_en / title_zh / summary_en / summary_zh / key_points_zh /
 #     tags_zh, with triggers that keep it in sync with the items table.
-SCHEMA_VERSION = 2
+# v3: rebuild `items_fts` as a self-contained (non-external-content)
+#     FTS5 table whose text is CJK-segmented in Python before insert
+#     (see fts5.segment_cjk). unicode61 treats a CJK run as ONE token,
+#     so the v2 index could never match "协作" inside "开源协作新工具";
+#     per-char segmentation + phrase queries fixes Chinese substring
+#     search. Index maintenance for INSERT/UPDATE moves into store.py
+#     (SQL triggers can't segment); only the DELETE trigger remains.
+SCHEMA_VERSION = 3
 
 
 SCHEMA_SQL = """
@@ -107,24 +114,32 @@ CREATE TABLE IF NOT EXISTS _meta (
 """
 
 
-# v2 FTS5 DDL — kept outside SCHEMA_SQL so a v0.2a install (schema
-# version 1) can be migrated forward to v2 without recreating the
-# items / sources tables. The migration runs once, in order, in
-# _run_migrations below.
+# v3 FTS5 DDL — kept outside SCHEMA_SQL so older installs can be
+# migrated forward without recreating the items / sources tables.
+# The migration runs once, in order, in _run_migrations below.
 #
-# Tokenizer note: we use plain `unicode61` — do NOT pass
-# `remove_diacritics 2`. The `remove_diacritics` flag incidentally
-# treats non-Latin scripts differently in a way that breaks
-# Chinese single-character prefix search (verified against
-# sqlite3 3.45+: typing "开" no longer finds "开源" because
-# unicode61+remove_diacritics merges adjacent CJK codepoints
-# into multi-char tokens).
-_V2_FTS5_DDL = (
+# v3 design notes:
+#   * NOT an external-content table (v2 used content='items'). The
+#     indexed text is the CJK-segmented form (fts5.segment_cjk), which
+#     differs from what the items table stores, so the index must own
+#     its copy of the text.
+#   * Plain `unicode61` tokenizer. Segmentation happens in Python;
+#     the tokenizer just splits on the spaces we inserted.
+#   * INSERT/UPDATE maintenance lives in store.py (_fts_upsert). Only
+#     row deletion is handled by a trigger (a rowid-based DELETE needs
+#     no segmentation, and it also covers ON DELETE CASCADE from
+#     sources → items).
+_V3_FTS5_DDL = (
     "CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5("
     "title_en, title_zh, summary_en, summary_zh, key_points_zh, tags_zh, "
-    "content='items', content_rowid='rowid', "
     "tokenize='unicode61'"
     ")"
+)
+
+_V3_DELETE_TRIGGER_DDL = (
+    "CREATE TRIGGER IF NOT EXISTS items_ad AFTER DELETE ON items BEGIN "
+    "DELETE FROM items_fts WHERE rowid = old.rowid; "
+    "END"
 )
 
 
@@ -150,11 +165,14 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
 
     Upgrade path
     ------------
-    A v0.2a install has `_meta.schema_version = '1'`. We:
+    A v0.2a install has `_meta.schema_version = '1'`; v0.2b has '2'.
+    We:
       1. Apply the v1 baseline (idempotent CREATE TABLE IF NOT EXISTS).
-      2. If schema_version < 2, create the FTS5 table + triggers
-         and backfill the index from existing items.
-      3. Bump schema_version to 2.
+      2. If schema_version < 3, (re)build the v3 FTS5 table: drop the
+         v2 external-content table + its triggers if present, create
+         the self-contained table + delete trigger, and backfill the
+         index from existing items with CJK segmentation applied.
+      3. Bump schema_version to 3.
     """
     # Step 1: baseline (v1) DDL — all idempotent.
     await db.executescript(SCHEMA_SQL)
@@ -167,39 +185,41 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
     row = await cur.fetchone()
     current_version = int(row[0]) if row else 0
 
-    if current_version < 2:
-        # 2a. FTS5 virtual table.
-        await db.execute(_V2_FTS5_DDL)
-
-        # 2b. FTS5 sync triggers — one execute() per trigger, never
-        #     inside executescript (see deadlock note above).
+    if current_version < 3:
+        # 3a. Drop the v2 layout if it exists (external-content FTS
+        #     table + the three sync triggers). One execute() per
+        #     statement — trigger DDL inside executescript deadlocks
+        #     (see note above).
         for ddl in (
-            "CREATE TRIGGER IF NOT EXISTS items_ai AFTER INSERT ON items BEGIN "
-            "INSERT INTO items_fts(rowid, title_en, title_zh, summary_en, summary_zh, key_points_zh, tags_zh) "
-            "VALUES (new.rowid, new.title_en, new.title_zh, new.summary_en, new.summary_zh, new.key_points_zh, new.tags_zh); "
-            "END",
-            "CREATE TRIGGER IF NOT EXISTS items_ad AFTER DELETE ON items BEGIN "
-            "INSERT INTO items_fts(items_fts, rowid, title_en, title_zh, summary_en, summary_zh, key_points_zh, tags_zh) "
-            "VALUES ('delete', old.rowid, old.title_en, old.title_zh, old.summary_en, old.summary_zh, old.key_points_zh, old.tags_zh); "
-            "END",
-            "CREATE TRIGGER IF NOT EXISTS items_au AFTER UPDATE ON items BEGIN "
-            "INSERT INTO items_fts(items_fts, rowid, title_en, title_zh, summary_en, summary_zh, key_points_zh, tags_zh) "
-            "VALUES ('delete', old.rowid, old.title_en, old.title_zh, old.summary_en, old.summary_zh, old.key_points_zh, old.tags_zh); "
-            "INSERT INTO items_fts(rowid, title_en, title_zh, summary_en, summary_zh, key_points_zh, tags_zh) "
-            "VALUES (new.rowid, new.title_en, new.title_zh, new.summary_en, new.summary_zh, new.key_points_zh, new.tags_zh); "
-            "END",
+            "DROP TRIGGER IF EXISTS items_ai",
+            "DROP TRIGGER IF EXISTS items_ad",
+            "DROP TRIGGER IF EXISTS items_au",
+            "DROP TABLE IF EXISTS items_fts",
         ):
             await db.execute(ddl)
 
-        # 2c. Backfill: copy any pre-existing items into the FTS
-        #     index. Fresh installs have zero rows so this is a
-        #     no-op. For a v0.2a upgrade, this materialises the
-        #     search index without requiring a re-sync.
-        await db.execute(
-            "INSERT INTO items_fts(rowid, title_en, title_zh, summary_en, summary_zh, key_points_zh, tags_zh) "
-            "SELECT rowid, title_en, title_zh, summary_en, summary_zh, key_points_zh, tags_zh "
-            "FROM items"
+        # 3b. v3 FTS5 table + delete trigger.
+        await db.execute(_V3_FTS5_DDL)
+        await db.execute(_V3_DELETE_TRIGGER_DDL)
+
+        # 3c. Backfill with CJK segmentation. Fresh installs have zero
+        #     rows so this is a no-op; upgrades get their search index
+        #     rebuilt without a re-sync. Imported lazily to avoid a
+        #     module-load cycle (fts5.py has no db import, but keep
+        #     db.py import-cheap for tests).
+        from prism_sidecar.fts5 import segment_cjk
+
+        cur = await db.execute(
+            "SELECT rowid, title_en, title_zh, summary_en, summary_zh, "
+            "key_points_zh, tags_zh FROM items"
         )
+        rows = await cur.fetchall()
+        for r in rows:
+            await db.execute(
+                "INSERT INTO items_fts(rowid, title_en, title_zh, summary_en, "
+                "summary_zh, key_points_zh, tags_zh) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (r[0], *(segment_cjk(v) for v in r[1:])),
+            )
 
     # Step 3: bump schema_version to the current target.
     await db.execute(

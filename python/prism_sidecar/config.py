@@ -56,10 +56,17 @@ FETCH_MAX_RETRIES: int = int(os.environ.get("PRISM_FETCH_MAX_RETRIES", "2"))
 
 FETCH_RETRY_BACKOFF_SEC: float = float(os.environ.get("PRISM_FETCH_RETRY_BACKOFF_SEC", "1.0"))
 
-# Sleep between sources to be polite to upstream RSS servers.
-FETCH_INTER_SOURCE_SLEEP_SEC: float = float(
-    os.environ.get("PRISM_FETCH_INTER_SOURCE_SLEEP_SEC", "1.0")
-)
+# NOTE: FETCH_INTER_SOURCE_SLEEP_SEC was removed in v0.2c — it was
+# defined here but never referenced anywhere (dead config, same class
+# of leftover as the i18n `_keyIndex`). Per-host politeness now lives
+# in `fetchers/_retry.py::HostThrottle`.
+
+# Graceful-shutdown grace window (v0.2c): on SIGTERM, in-flight sync
+# jobs get this many seconds to stop at their per-source checkpoint and
+# persist partial progress before tasks are cancelled hard. Keep this
+# BELOW the Tauri side's SIGKILL fallback (5s in sidecar.rs) or the
+# process dies mid-drain and the wait was pointless.
+SHUTDOWN_GRACE_SEC: float = float(os.environ.get("PRISM_SHUTDOWN_GRACE_SEC", "4.0"))
 
 # Window of items to keep from a single fetch (cutoff = now - window).
 FETCH_LOOKBACK_DAYS: int = int(os.environ.get("PRISM_FETCH_LOOKBACK_DAYS", "7"))
@@ -91,7 +98,7 @@ __all__ = [
     "FETCH_TIMEOUT_SEC",
     "FETCH_MAX_RETRIES",
     "FETCH_RETRY_BACKOFF_SEC",
-    "FETCH_INTER_SOURCE_SLEEP_SEC",
+    "SHUTDOWN_GRACE_SEC",
     "FETCH_LOOKBACK_DAYS",
     "INITIAL_FETCH_LOOKBACK_DAYS",
     "is_distiller_configured",

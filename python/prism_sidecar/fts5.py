@@ -16,16 +16,23 @@ prefix-search term (``"andreas"*``). Prefix search means typing
 "and" still finds "Andreas", which is the most common case for
 typeahead-style search.
 
-Chinese note
-------------
-We use the FTS5 ``unicode61`` tokenizer (configured in db.py)
-which by default splits on non-letter characters. That means
-"开源协作" becomes the tokens "开" "源" "协" "作" — single
-characters. Combined with prefix search, typing "开" finds
-"开源" and typing "开源" finds anything containing the
-contiguous sequence 开→源. Not as good as jieba word
-segmentation but zero-dependency and a huge step up from
-``LIKE '%...%'`` scans.
+Chinese note (schema v3)
+------------------------
+FTS5's ``unicode61`` tokenizer treats a contiguous CJK run as ONE
+token (NOT one token per character — "开源协作" is a single 4-char
+token). Prefix search over that token only matches from the *start*
+of the run, so "协作" could never find "开源协作新工具".
+
+Since schema v3 we therefore segment CJK text OURSELVES at index
+time: every CJK character is space-separated before it is written
+into ``items_fts`` (see :func:`segment_cjk`, called from
+``store.py``). On the query side, a CJK run in the user's input is
+expanded into an FTS5 *phrase* of consecutive single-char tokens
+(``开源`` → ``"开 源"``), which matches the sequence 开→源 anywhere
+inside the indexed text. Non-CJK tokens keep the original
+``"tok"*`` prefix form. Zero-dependency, and it gives true
+substring search for Chinese — a huge step up from both
+``LIKE '%...%'`` scans and the broken whole-run prefix match.
 """
 
 from __future__ import annotations
@@ -46,6 +53,46 @@ _FTS5_METACHARS = re.compile(r'["\'()*:^\-+]')
 # the right behaviour for a knowledge-base search).
 _TOKEN_SPLIT = re.compile(r"[\s,;./\\|]+")
 
+# CJK character ranges we segment. Covers the URO + Ext-A blocks and
+# the compatibility ideographs — the scripts unicode61 would otherwise
+# lump into one run. (Kana/Hangul are left alone: those scripts have
+# real word boundaries more often and we have no zh-adjacent sources
+# in those languages today.)
+_CJK_RANGE = "㐀-䶿一-鿿豈-﫿"
+_CJK_CHAR_RE = re.compile(f"[{_CJK_RANGE}]")
+_CJK_RUN_RE = re.compile(f"([{_CJK_RANGE}]+)|([^{_CJK_RANGE}]+)")
+
+
+def segment_cjk(text: str | None) -> str:
+    """Space-separate every CJK character in ``text`` (index-time form).
+
+    ``store.py`` runs every indexed column through this before writing
+    it into ``items_fts``, so unicode61 sees one token per CJK char.
+    Idempotent; non-CJK text passes through unchanged (extra spaces
+    are harmless — unicode61 splits on whitespace anyway).
+    """
+    if not text:
+        return ""
+    return _CJK_CHAR_RE.sub(lambda m: f" {m.group(0)} ", text)
+
+
+def _expand_token(tok: str) -> list[str]:
+    """Turn one user token into FTS5 MATCH terms.
+
+    CJK runs become a *phrase* of consecutive single-char tokens
+    (``开源`` → ``"开 源"``) which matches the character sequence
+    anywhere in the segmented index. Non-CJK runs keep the
+    quoted-prefix form (``andr`` → ``"andr"*``).
+    """
+    terms: list[str] = []
+    for m in _CJK_RUN_RE.finditer(tok):
+        cjk, other = m.group(1), m.group(2)
+        if cjk:
+            terms.append('"' + " ".join(cjk) + '"')
+        elif other and other.strip():
+            terms.append(f'"{other}"*')
+    return terms
+
 
 def sanitize_fts5_query(raw: str) -> str | None:
     """Turn a user's free-text query into a safe FTS5 MATCH expression.
@@ -55,19 +102,14 @@ def sanitize_fts5_query(raw: str) -> str | None:
     treat that as "no filter" rather than passing an empty string
     to MATCH (which is a syntax error).
 
-    Note on Chinese
-    ----------------
-    FTS5's ``unicode61`` tokenizer (the one we use) treats a run
-    of CJK characters as ONE token, not one per character. So the
-    column stream for the title "Hugging Face 开源协作新工具" is
-    approximately ``hugging`` ``face`` ``开源协作新工具`` — the
-    Chinese portion is a single 7-char token.
-
-    Consequence: a user typing "开源" needs the query
-    ``"开源"*`` (a single prefix term), NOT ``"开"* "源"*``
-    (which would AND-match two tokens that don't exist in the
-    column). The sanitizer below leaves Chinese substrings
-    intact and only wraps them in the FTS5 prefix form.
+    Note on Chinese (schema v3)
+    ---------------------------
+    The index stores CJK text pre-segmented one char per token (see
+    :func:`segment_cjk`), so a CJK run in the query is expanded into
+    a phrase of single-char tokens: ``开源`` → ``"开 源"``. That
+    matches 开→源 as a contiguous sequence anywhere in the text —
+    including the middle of a word, which the pre-v3 whole-run
+    prefix form (``"开源"*``) could not do.
     """
     if not raw:
         return None
@@ -77,12 +119,12 @@ def sanitize_fts5_query(raw: str) -> str | None:
     tokens = [t for t in _TOKEN_SPLIT.split(cleaned) if t]
     if not tokens:
         return None
-    # Wrap each token in a double-quoted FTS5 string + a trailing
-    # `*` for prefix match. Quoting defends against the (very
-    # unlikely after our strip) chance of a stray metachar and
-    # also tells FTS5 to treat the token as a literal, not a
-    # column-name expression.
-    return " ".join(f'"{tok}"*' for tok in tokens)
+    terms: list[str] = []
+    for tok in tokens:
+        terms.extend(_expand_token(tok))
+    if not terms:
+        return None
+    return " ".join(terms)
 
 
 def build_snippet(
@@ -185,20 +227,23 @@ def _column_index(name: str) -> int:
 
 
 def iter_token_hits(query: str) -> Iterable[str]:
-    """Yield the sanitized search tokens in a query, for callers
+    """Yield the cleaned search tokens in a query, for callers
     that want to do their own highlighting (e.g. a frontend that
     re-renders server-returned snippets with its own <mark> style).
+
+    Tokens are returned in their *display* form ("开源", not the
+    segmented MATCH phrase ``"开 源"``) so a highlighter can match
+    them against the original, unsegmented text.
     """
-    safe = sanitize_fts5_query(query)
-    if safe is None:
+    if not query:
         return []
-    # Strip the surrounding "..." and trailing * we added so callers
-    # get clean tokens back.
-    return [tok.strip('"*') for tok in safe.split()]
+    cleaned = _FTS5_METACHARS.sub(" ", query)
+    return [t for t in _TOKEN_SPLIT.split(cleaned) if t]
 
 
 __all__ = [
     "sanitize_fts5_query",
+    "segment_cjk",
     "build_snippet",
     "iter_token_hits",
 ]

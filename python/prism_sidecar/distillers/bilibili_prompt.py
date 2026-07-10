@@ -51,15 +51,53 @@ def is_bilibili(raw: RawItem) -> bool:
     """Return True if this raw item is from a B 站 source.
 
     Detection priority:
-      1. ``raw.metadata["source_kind"] == "bilibili"``（preferred —— pipeline
-         在 fetch 时就打了这个 tag）
-      2. ``raw.url`` 包含 ``bilibili.com``（fallback —— 给未来手动 import 用）
+      1. ``raw.metadata["feed_kind"] == "bilibili"``（preferred —— this is
+         the actual key ``fetchers/bilibili.py`` sets; ``fetchers/rss.py``
+         uses the same key with ``"rss"``. NOTE: an earlier version of this
+         function checked ``"source_kind"``, which no fetcher has ever set —
+         detection silently fell through to the URL fallback below every
+         single time. Harmless in practice because bilibili URLs always
+         match the fallback, but it made the "preferred" path dead code.)
+      2. ``raw.url`` 包含 ``bilibili.com``（fallback —— 给未来手动 import 用，
+         也是老 bug 存在期间实际生效的路径）
     """
-    meta_kind = (raw.metadata or {}).get("source_kind")
+    meta_kind = (raw.metadata or {}).get("feed_kind")
     if isinstance(meta_kind, str) and meta_kind.lower() == "bilibili":
         return True
     url = (raw.url or "").lower()
     return "bilibili.com" in url or "b23.tv" in url
+
+
+# v0.2c: the YouTube fetcher shares the [CC]/[AI] cue format and the
+# long-transcript problem (章节切分 + CC/AI 合并), so the same prompt
+# machinery serves both platforms. Wording differences (B 站/UP 主 vs
+# YouTube/频道主) are parameterised via `_labels_for`.
+_VIDEO_FEED_KINDS = {"bilibili", "youtube"}
+
+
+def is_video_transcript(raw: RawItem) -> bool:
+    """True if this raw item is a video transcript (B 站 or YouTube)."""
+    meta_kind = (raw.metadata or {}).get("feed_kind")
+    if isinstance(meta_kind, str) and meta_kind.lower() in _VIDEO_FEED_KINDS:
+        return True
+    url = (raw.url or "").lower()
+    return (
+        "bilibili.com" in url
+        or "b23.tv" in url
+        or "youtube.com/watch" in url
+        or "youtu.be/" in url
+    )
+
+
+def _labels_for(raw: RawItem) -> tuple[str, str]:
+    """(platform_label, author_label) for the prompt templates."""
+    meta_kind = (raw.metadata or {}).get("feed_kind")
+    url = (raw.url or "").lower()
+    if (isinstance(meta_kind, str) and meta_kind.lower() == "youtube") or (
+        "youtube.com" in url or "youtu.be" in url
+    ):
+        return "YouTube ", "频道主"
+    return "B 站", "UP 主"
 
 
 # ----- Subtitle parsing ---------------------------------------------------
@@ -257,7 +295,7 @@ def truncate_segment_list(
 # ----- Prompt templates ---------------------------------------------------
 
 
-BILIBILI_DISTILL_PROMPT = """你是一名中文 AI 内容编辑，正在为一档 B 站长视频做精炼摘要。
+BILIBILI_DISTILL_PROMPT = """你是一名中文 AI 内容编辑，正在为一档 {platform_label}长视频做精炼摘要。
 
 # 输入材料
 - 视频标题：{title_en}
@@ -302,7 +340,7 @@ BILIBILI_META_ONLY_PROMPT = """你是一名中文 AI 内容编辑。**本视频�
 # 输入材料
 - 视频标题：{title_en}
 - 视频描述：{description}
-- 视频作者 / UP 主：{author}
+- 视频作者 / {author_label}：{author}
 
 # 你的工作
 **仅基于标题 + 描述** 做最合理的推断式摘要。明确告诉用户这是推断，不要假装你看过内容。
@@ -430,11 +468,14 @@ def build_bilibili_prompt(
     else:
         description = ""
 
+    platform_label, author_label = _labels_for(raw)
+
     if not content:
         return BILIBILI_META_ONLY_PROMPT.format(
             title_en=raw.title or "",
             description=description or "（无描述）",
             author=raw.author or "（未知）",
+            author_label=author_label,
         )
 
     analysis = parse_subtitle(content)
@@ -457,6 +498,7 @@ def build_bilibili_prompt(
         description=description or "（无描述）",
         subtitle_source_note=_subtitle_source_note(analysis, track_count),
         subtitle_body=subtitle_block,
+        platform_label=platform_label,
     )
 
 
@@ -464,13 +506,14 @@ def build_bilibili_prompt(
 
 
 def should_use_bilibili_prompt(raw: RawItem) -> bool:
-    """Decide whether this raw item should go through the bilibili prompt.
+    """Decide whether this raw item should go through the video prompt.
 
-    Mirrors :func:`is_bilibili` but exposed under a stable name so the
-    ``LitellmDistiller`` base class can call it without importing the
-    full set of bilibili utilities.
+    v0.2c: widened from B 站-only to all video transcripts (B 站 +
+    YouTube) — the prompt machinery is shared, only the platform
+    wording differs. Kept under the historical name because
+    ``distillers/base.py`` and the tests import it as such.
     """
-    return is_bilibili(raw)
+    return is_video_transcript(raw)
 
 
 __all__ = [
@@ -482,6 +525,7 @@ __all__ = [
     "BILIBILI_META_ONLY_PROMPT",
     "SubtitleAnalysis",
     "is_bilibili",
+    "is_video_transcript",
     "parse_subtitle",
     "truncate_subtitle",
     "truncate_segment_list",
