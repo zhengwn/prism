@@ -1,8 +1,8 @@
 # Prism — Roadmap
 
-> 公开 v1.0 之前的规划。v0.2c（多源补齐）**已收尾并在本机全量验证过**（2026-07-10）：Bilibili、YouTube、Podcast、arXiv、**X（bridge-RSS PoC）** 五路 fetcher + 错误重试/速率限制 + 优雅关闭 + Vite setApiKey 修复 + **Apply & Restart Sidecar 按钮**；**Playwright 前端 E2E 已跑绿**（Tauri-shell 层留待 tauri-driver）。
+> 公开 v1.0 之前的规划。v0.2c（多源补齐）**已收尾并在本机全量验证过**（2026-07-10）：Bilibili、YouTube、Podcast、arXiv、**X（bridge-RSS PoC）** 五路 fetcher + 错误重试/速率限制 + 优雅关闭 + Vite setApiKey 修复 + **Apply & Restart Sidecar 按钮**；**Playwright 前端 E2E 已跑绿**（Tauri-shell 层留待 WebdriverIO + `@wdio/tauri-service`；macOS 无原版 tauri-driver）。
 >
-> **实测结果**（不再是静态计数）：`uv run pytest` **253/253 绿** · `npm test` **28/28 绿** · `cargo test` **17/17 绿**（keystore 8 + llm_config 9）· `cargo check --all-targets` 干净 · `npm run build` 干净 · `npm run test:e2e` **5/5 绿**。跑之前修掉了三个真实缺陷；随后又用真实 MiniMax key 跑通了 **distill 端到端**（2 条真实 LLM 调用 + FTS5 索引验证），另修两个附带问题。见下面「收尾验证」小节。
+> **实测结果**（不再是静态计数）：`uv run pytest` **254/254 绿** · `npm test` **28/28 绿** · `cargo test` **17/17 绿**（keystore 8 + llm_config 9）· `cargo check --all-targets` 干净 · `npm run build` 干净 · `npm run test:e2e` **5/5 绿**。跑之前修掉了三个真实缺陷；随后又用真实 MiniMax key 跑通了 **distill 端到端**（2 条真实 LLM 调用 + FTS5 索引验证），另修两个附带问题。见下面「收尾验证」小节。
 
 ## 实际状态
 
@@ -24,7 +24,7 @@
   - **Bilibili fetcher PoC 已合入**：mid/bvid 两种订阅模式 + CC/AI 字幕合并 + 章节切分，`distillers/bilibili_prompt.py` 专属提炼 prompt；前端 SourcesPage/DetailPanel 已能加 Bilibili 源、嵌入播放器（commits: `fbef1ac` fetcher / `f7db3b7` prompt / `9f2bba8` 接线 / `e95dc50` 前端 / 三个 merge commit）
   - **sidecar 内部拆分**（不在原 roadmap 里，属于顺手的工程债清理）：`app.py` 里的同步 job 编排（并发控制/取消/后台任务）拆到独立的 `pipeline/orchestrator.py`，路由文件从 900+ 行瘦到 500 多行
   - 种子源从 5 个涨到 8 个（新增 3 个 Bilibili AI 资讯 UP 主）
-  - 测试：pytest **253/253 绿**（实跑，`--collect-only` 逐文件核对过；此前 ROADMAP/README 写的 175、AGENTS/ARCHITECTURE 写的 222 都是静态计数，且互相矛盾），vitest **28/28 绿**（v0.2b 记的 32 一直是错的）
+  - 测试：pytest **254/254 绿**（实跑，`--collect-only` 逐文件核对过；此前 ROADMAP/README 写的 175、AGENTS/ARCHITECTURE 写的 222 都是静态计数，且互相矛盾），vitest **28/28 绿**（v0.2b 记的 32 一直是错的）
   - **补做的历史欠账**（这轮全项目复查带出来的，不是新功能）：
     - `i18n/en.json`/`zh.json` 里的 `_keyIndex` 数组（195 条，没有任何代码引用）终于真删了——之前 ROADMAP 一直写着"v0.2b 已清理"，其实一直没删
     - `formatRelativeTime()`（"3h ago" 这种相对时间）之前不管 UI 语言都固定输出英文，违反 AGENTS.md 自己定的"所有用户可见字符串都要过 `t()`"规矩；现在接上 `time.*` i18n key，中文界面显示"3 小时前"
@@ -103,7 +103,7 @@
 - [x] **Tauri：`Apply & Restart Sidecar` 按钮**：新增 `sidecar::restart_sidecar` command（后台 fire-and-forget kill+respawn，复用既有 `restart()`），lib.rs 注册；`api.ts::restartSidecar`（Tauri 内 invoke，浏览器 dev no-op + warn）；SettingsPage Sidecar 卡片加按钮 + `useMutation`（成功后等 1.5s 再 invalidate health 反映新进程）+ 错误提示；i18n en/zh 各 +4。**Rust 侧本机需 `cargo check`（沙箱无 cargo）**
 - [x] **scheduler / sidecar 优雅关闭**：Python 侧 lifespan shutdown 顺序改为 stop scheduler → `orchestrator.drain_inflight()`（给所有 in-flight job 打 cancel 标记，等它们在 per-source 检查点停下并落盘部分进度，宽限 `PRISM_SHUTDOWN_GRACE_SEC`=4s）→ close_db；Tauri 侧 `kill_existing_child` 在 SIGTERM 后轮询 `try_wait` 最多 5s（刻意大于 Python 的 4s）才硬杀，空闲时 sidecar 秒退不拖慢退出。注意：「跑完当前源再停」就是设计目标——等一次完整 distill run（可能几分钟）不现实
 - [x] **Vite 调试下 `setApiKey` 抛错修复**：根因是浏览器 dev 路径把 `apiKey` 原样 POST 给 sidecar，而 sidecar 设计上 400 拒收（key 不过 HTTP）——`api.ts` 注释声称"不发 key"但代码发了。修复：非 Tauri 路径剥掉 `apiKey` + console.warn 说明 key 只能在 Tauri 壳里存；`reveal_llm_key` 的裸 `invoke` 也补了 `isTauri()` 守卫
-- [~] **Playwright E2E（前端层已跑绿，Tauri-shell 层留待 tauri-driver）**：`playwright.config.ts` + `e2e/`（`mock-sidecar.ts` 把 sidecar HTTP 契约全 mock 掉，hermetic、无需 Python/无需 key）+ `test:e2e` script + `@playwright/test` devDep + README。`smoke.spec.ts` **5/5 绿**（本机实跑）：inbox 渲染 / manual sync toast / add-source 建 X 源 / settings 版本+restart 按钮 / **中文 UI 下渲染 `titleZh`**（收尾时新增，见下）。**重要 scope 说明**：Playwright 挂不上 Tauri 的原生 webview（WKWebView/WebView2 无 CDP），所以这层只跑浏览器里的 React UI（`isTauri()=false` 走 HTTP fallback），keystore/`invoke`/`restart_sidecar` 这些壳内路径**没覆盖**。真正的壳级 E2E（真 invoke、AES keystore、sidecar spawn）需要 `tauri-driver` + WebdriverIO——列为后续
+- [~] **Playwright E2E（前端层已跑绿，Tauri-shell 层留待 WebdriverIO + `@wdio/tauri-service`，macOS 上 tauri-driver 不可用）**：`playwright.config.ts` + `e2e/`（`mock-sidecar.ts` 把 sidecar HTTP 契约全 mock 掉，hermetic、无需 Python/无需 key）+ `test:e2e` script + `@playwright/test` devDep + README。`smoke.spec.ts` **5/5 绿**（本机实跑）：inbox 渲染 / manual sync toast / add-source 建 X 源 / settings 版本+restart 按钮 / **中文 UI 下渲染 `titleZh`**（收尾时新增，见下）。**重要 scope 说明**：Playwright 挂不上 Tauri 的原生 webview（WKWebView/WebView2 无 CDP），所以这层只跑浏览器里的 React UI（`isTauri()=false` 走 HTTP fallback），keystore/`invoke`/`restart_sidecar` 这些壳内路径**没覆盖**。真正的壳级 E2E（真 invoke、AES keystore、sidecar spawn）需要 WebdriverIO + `@wdio/tauri-service`（macOS 无 WKWebView WebDriver，原版 tauri-driver 只支持 Win/Linux，见「仍未覆盖」）——列为后续
 - [x] **顺手做的工程债**：`app.py`（900+ 行）里的同步 job 编排逻辑拆到 `pipeline/orchestrator.py`，路由文件瘦身；`AGENTS.md`/`README.md`/`docs/ARCHITECTURE.md` 里过期的测试数字、目录树、provider 数量、种子源数量一并同步
 - [x] **i18n `_keyIndex` 真正删除**（195 条死数组，ROADMAP 之前误报"已清理"）+ `formatRelativeTime` 接入 `t()`，不再固定输出英文
 - [x] **version 字段统一**：`package.json`/`Cargo.toml`/`tauri.conf.json`/Sidebar 页脚从 `0.1.0` 对齐到 Python sidecar 已经在用的 `0.2.0`
@@ -139,12 +139,20 @@
 - 启动 banner 打 `base_url=None`，但 env 覆盖其实生效了——那行直接回显 `active_provider.json` 的 `base_url` 字段，而真正的解析在 `distillers/minimax.py`（`explicit > env > default`）。新增 `settings.resolve_base_url()` 让 banner 报**生效值**，配 4 个回归测试钉死优先级
 - `package.json` 的 `dev:keychain-check` 同时引用了 `--test keychain_smoke` 和 `--example dev_keychain_check`，**两者都不存在**（v0.2b keystore 重写时测试改名成 `keystore_smoke.rs`，example 目录压根没建过）——这个 script 从 v0.2b 起跑必然失败。改成 `dev:keystore-check`，指向真实存在的 `keystore_smoke`
 
-**仍未覆盖**（诚实记账，别再让文档撒谎）：
+**第二轮补验**（2026-07-10 晚，把上一轮"仍未覆盖"清单里能收的都收了）：
 
-- **Tauri 壳内路径**：`invoke`、AES keystore、sidecar spawn、`restart_sidecar` 按钮的真实点击。`cargo test` 只覆盖到 Rust 单元层；`restart_sidecar` 已确认注册进 `invoke_handler`、`api.ts` 也有 `isTauri()` 守卫，但**没有在真 app 里点过**。需要 `tauri-driver` + WebdriverIO
-- **Bilibili / YouTube / Podcast fetcher 的真实网络抓取**：只有单测覆盖（Bilibili 在 drain 测试里被 SIGTERM 打断了）
-- **distill 的失败路径**：只验了 happy path。`key_invalid` 提前停批、JSON 解析兜底（全角引号救援）等分支仍只有单测
-- `GET /api/sync/{job_id}` 在**运行中**返回 `sourcesTotal=0`：`create_job` 建行时不写 `sources_total`，只在 `finish_job` 落盘，但 `_background_pipeline` 的 docstring 声称"updating the job row as we go"。前端只读**终态** job 的 `sourcesTotal`（取消 toast），所以**用户看不到**，属于 API 契约的潜在瑕疵，没在这轮动它
+- ~~`GET /api/sync/{job_id}` 运行中返回 `sourcesTotal=0`~~ **已修**：`create_job` 新增 `sources_total` 参数（四个调用点建 job 时都已知源数量），运行中轮询从此返回真实 done/total；orchestrator 本来就每源调 `update_job_progress`，缺的只是建行时的 total。加 store 回归测试防 `update_job_progress` 把 total 打回 0。**真实 API 上验证过**：sync 进行中 `"sourcesTotal":1`
+- ~~distill 的 `key_invalid` 失败路径~~ **已实测**：用假 key 启动 sidecar → `redistill?batch_limit=3` → `key_invalid: true, distilled: 0`，一次认证失败即提前停批（不烧后续调用），错误文案可操作，item 无半写行（pending 数不变）。顺带验证了 `resolve_base_url` 修复后 banner 报生效值
+- ~~Bilibili / YouTube / Podcast 实网抓取~~ **已实测**（隔离 DB）：
+  - Bilibili（智东西）：第一次撞上真实 **412 反爬** → `FetchError` 落 `last_error`、`fail_streak=1`；手动重试成功 **20 条**、`fail_streak` 归零、`retry_after` 清空——失败→恢复的完整记账循环被真实网络错误验证
+  - Podcast（Lex Fridman feed）：1 条，enclosure → `metadata.audio_url` ✓、`content_type=audio` ✓、`feed_kind=podcast` ✓（该集无 `itunes:duration`/episode 标签，对应字段为空属正常）
+  - YouTube（yt-dlp 单视频 `jNQXAC9IVRw`）：1 条，`duration_sec=19` ✓、`feed_kind=youtube` ✓、`subtitle_lang`/`subtitle_kind` 元数据在 ✓
+
+**仍未覆盖**（诚实记账）：
+
+- **Tauri 壳内路径**：`invoke`、AES keystore、sidecar spawn、`restart_sidecar` 按钮的真实点击。**选型已查证（2026-07）**：原版 `tauri-driver` 只支持 Windows/Linux——Apple 不为 WKWebView 提供 WebDriver，本项目开发机是 macOS，此路不通。正路是 **WebdriverIO + `@wdio/tauri-service`**（经 `tauri-plugin-wdio-webdriver` 在 app 内嵌 WebDriver server，原生支持 macOS，无需 CrabNebula 付费 key）。剩实施：加插件（注意用 feature/cfg 门控出 release 包）+ wdio 配置 + 壳级 smoke spec——独立一轮做
+- **distill 的 JSON 解析兜底**（全角引号救援等）：`key_invalid` 已实测,但要让真实 LLM 确定性地吐坏 JSON 不可行,这条只能靠单测钉住
+- **YouTube channel 模式 / Bilibili 字幕合并的实网路径**：这轮实测的是 YouTube 单视频 + Bilibili 视频列表;channel 列表倒序截断、CC/AI 双轨合并这些分支在真实数据上仍未跑过
 
 ## v0.3 — Agent 接口
 

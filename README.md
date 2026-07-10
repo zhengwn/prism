@@ -20,9 +20,9 @@ Prism 是一个 **AI 资讯聚合 + 知识提炼** 桌面应用，把分散在 R
 - 搜索：InboxPage 走 SQLite FTS5 全文搜索（中文 prefix match + sanitizer 兜底）
 - 详情页：编号 / `#标签` / `**重点**` inline-markdown 渲染
 
-**v0.2c 已完成**（2026-07-10 本机全量验证）：Bilibili fetcher 作为 PoC 合入 main（mid/bvid 两种模式 + CC/AI 字幕合并 + 章节切分 + Bilibili 专属提炼 prompt，前端 SourcesPage/DetailPanel 已接入）。本轮新增：**YouTube fetcher**（yt-dlp，channel/video 两模式 + 字幕四级优先 + 共享 `[CC]/[AI]` 字幕格式复用视频提炼 prompt，前端播放器/badge/i18n 已接入）和**错误重试 + 速率限制**（`FetchError` 契约让整源失败真正落到 `sources.last_error`；`retry_async` + per-host `HostThrottle`；失败冷却 min(2^n,24)h + 每小时补跑 job）——设计稿见 `docs/design/`。本轮再加：**Podcast fetcher**（继承 RSSFetcher，enclosure/itunes:duration）、**arXiv fetcher**（新增 arxiv kind，categories 配置 + 3s API 限速）、**优雅关闭**（SIGTERM → in-flight job 在 per-source 检查点落盘部分进度再退，Tauri 5s 宽限）、**Vite 下 setApiKey 报错修复**。sidecar 内部也做了一轮拆分：同步 job 的并发控制/取消逻辑从 `app.py` 挪到了独立的 `pipeline/orchestrator.py`，路由文件瘦身到 500 多行。收尾一轮再加：**X fetcher（bridge-RSS PoC）**（继承 RSSFetcher，指向自托管 RSSHub/Nitter feed，handle 解析 + tweet 元数据 + X 短文本专属 prompt）、**Apply & Restart Sidecar 按钮**（`restart_sidecar` command，改 key 后不必重启整个 app）、**Playwright 前端 E2E**（hermetic mock sidecar，5 个 smoke case；Tauri-shell 层留待 tauri-driver）。
+**v0.2c 已完成**（2026-07-10 本机全量验证）：Bilibili fetcher 作为 PoC 合入 main（mid/bvid 两种模式 + CC/AI 字幕合并 + 章节切分 + Bilibili 专属提炼 prompt，前端 SourcesPage/DetailPanel 已接入）。本轮新增：**YouTube fetcher**（yt-dlp，channel/video 两模式 + 字幕四级优先 + 共享 `[CC]/[AI]` 字幕格式复用视频提炼 prompt，前端播放器/badge/i18n 已接入）和**错误重试 + 速率限制**（`FetchError` 契约让整源失败真正落到 `sources.last_error`；`retry_async` + per-host `HostThrottle`；失败冷却 min(2^n,24)h + 每小时补跑 job）——设计稿见 `docs/design/`。本轮再加：**Podcast fetcher**（继承 RSSFetcher，enclosure/itunes:duration）、**arXiv fetcher**（新增 arxiv kind，categories 配置 + 3s API 限速）、**优雅关闭**（SIGTERM → in-flight job 在 per-source 检查点落盘部分进度再退，Tauri 5s 宽限）、**Vite 下 setApiKey 报错修复**。sidecar 内部也做了一轮拆分：同步 job 的并发控制/取消逻辑从 `app.py` 挪到了独立的 `pipeline/orchestrator.py`，路由文件瘦身到 500 多行。收尾一轮再加：**X fetcher（bridge-RSS PoC）**（继承 RSSFetcher，指向自托管 RSSHub/Nitter feed，handle 解析 + tweet 元数据 + X 短文本专属 prompt）、**Apply & Restart Sidecar 按钮**（`restart_sidecar` command，改 key 后不必重启整个 app）、**Playwright 前端 E2E**（hermetic mock sidecar，5 个 smoke case；Tauri-shell 层留待 WebdriverIO + `@wdio/tauri-service`，macOS 无原版 tauri-driver）。
 
-测试（**本机实跑，非静态计数**）：pytest **253/253** · vitest **28/28** · Rust **17/17**（keystore_smoke 8 + llm_config_smoke 9）· Playwright E2E **5/5** · `cargo check --all-targets` + `npm run build` 干净。复核：`cd python && uv run pytest -v` / `npm test` / `cargo test` / `npm run test:e2e`。
+测试（**本机实跑，非静态计数**）：pytest **254/254** · vitest **28/28** · Rust **17/17**（keystore_smoke 8 + llm_config_smoke 9）· Playwright E2E **5/5** · `cargo check --all-targets` + `npm run build` 干净。复核：`cd python && uv run pytest -v` / `npm test` / `cargo test` / `npm run test:e2e`。
 
 收尾验证时修掉了三个真实缺陷（浮点 jitter 断言、`llm_config_smoke.rs` 自 v0.2b 起编译不过、vitest 误收 Playwright spec），并真跑了 sidecar 端到端（真实 RSS 30 条 / arXiv 50 条、`FetchError` → `last_error` + 24h 冷却、SIGTERM 中断 sync 3.87s 内落盘部分进度）。详见 `docs/ROADMAP.md` 的「v0.2c 收尾验证」。
 
@@ -129,7 +129,7 @@ prism/
 │   │   ├── distillers/       # LLM 提炼（base + deepseek + minimax + bilibili_prompt + registry）
 │   │   ├── pipeline/         # sync.py（单源）+ orchestrator.py（job 编排/取消）+ distill.py（重蒸馏批处理）
 │   │   └── data/fixtures.py  # 8 个种子源（HN + 3 个 Bilibili PoC + 4 个 RSS）
-│   └── tests/                # pytest 253 个 case（实跑核对；含 bilibili/youtube/arxiv/x fetcher、retry、fetcher registry）
+│   └── tests/                # pytest 254 个 case（实跑核对；含 bilibili/youtube/arxiv/x fetcher、retry、fetcher registry）
 ├── docs/                     # 设计文档
 │   ├── ROADMAP.md
 │   └── ARCHITECTURE.md

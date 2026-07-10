@@ -69,7 +69,7 @@ prism/
 │   │   ├── distillers/   # Distiller Protocol + DeepSeek + MiniMax via litellm + bilibili_prompt.py
 │   │   ├── pipeline/     # sync.py (per-source) + orchestrator.py (job concurrency/cancel) + distill.py (redistill batch)
 │   │   └── data/fixtures.py  # 8 seed sources (HN + 3 Bilibili PoC + 4 RSS)
-│   ├── tests/            # pytest 253 case（实跑核对）(rss/hn/bilibili/youtube/podcast/arxiv/x/retry/distiller/store/sync/api/fts5/settings/fetcher-registry…)
+│   ├── tests/            # pytest 254 case（实跑核对）(rss/hn/bilibili/youtube/podcast/arxiv/x/retry/distiller/store/sync/api/fts5/settings/fetcher-registry…)
 │   └── README.md
 ├── docs/                 # ROADMAP.md, ARCHITECTURE.md
 ├── public/               # Static assets (favicon, etc.)
@@ -148,7 +148,7 @@ best-practice, so they live here rather than in agent memory.
 ## Testing instructions
 
 - **测试覆盖**（v0.2c 收尾时在本机全量实跑核对过，2026-07-10；下面的数字是真跑出来的，不是数 `def test_` 数出来的）：
-  - **Python sidecar**：`cd python && uv run pytest -v` — **253/253 绿**（rss / hn / bilibili / youtube / podcast / arxiv / x fetcher + prompt / retry+throttle / deepseek + minimax distiller / provider registry / store / sync / api / settings api / FTS5 / fetcher registry 等）
+  - **Python sidecar**：`cd python && uv run pytest -v` — **254/254 绿**（rss / hn / bilibili / youtube / podcast / arxiv / x fetcher + prompt / retry+throttle / deepseek + minimax distiller / provider registry / store / sync / api / settings api / FTS5 / fetcher registry 等）
   - **React 组件**：`npm test` — **28/28 绿**（button / DetailPanel / inline-markdown / InboxPage / SettingsPage / SourcesPage）
   - **Rust**：`cd src-tauri && cargo test` — **17/17 绿**（keystore_smoke 8 + llm_config_smoke 9）；`cargo check --all-targets` 干净
   - **前端 E2E**：`npm run test:e2e` — **5/5 绿**（Playwright + hermetic mock sidecar，浏览器层；**挂不到 Tauri 原生 webview**，壳内 `invoke`/keystore 未覆盖）

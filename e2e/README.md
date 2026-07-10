@@ -39,7 +39,10 @@ paths (API-key storage, `reveal_llm_key`, `set_llm_config`,
 `restart_sidecar`) are **not** exercised here.
 
 True shell-level E2E (real `invoke` commands, the AES-256-GCM keystore,
-sidecar spawn/shutdown) needs `tauri-driver` + WebdriverIO, which speaks
-the WebDriver protocol Tauri supports. That's tracked as a follow-up in
-`docs/ROADMAP.md`. The Playwright layer here is the fast, hermetic UI
-regression net; the WDIO layer would be the slower, real-shell net on top.
+sidecar spawn/shutdown) needs WebdriverIO + `@wdio/tauri-service`, which
+embeds a WebDriver server inside the app via `tauri-plugin-wdio-webdriver`.
+Note: the plain `tauri-driver` binary is Windows/Linux only — Apple ships
+no WebDriver for WKWebView, so on macOS the embedded provider is the way.
+That's tracked as a follow-up in `docs/ROADMAP.md`. The Playwright layer
+here is the fast, hermetic UI regression net; the WDIO layer would be the
+slower, real-shell net on top.

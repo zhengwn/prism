@@ -9,9 +9,10 @@ import { defineConfig, devices } from "@playwright/test";
  * Chromium instance. It does NOT attach to the native Tauri webview —
  * Tauri uses the OS webview (WKWebView / WebView2), which has no CDP
  * endpoint for Playwright to connect to. True Tauri-shell E2E (real
- * `invoke` commands, the AES keystore, sidecar spawn) needs
- * `tauri-driver` + WebdriverIO and is tracked as a separate follow-up in
- * docs/ROADMAP.md.
+ * `invoke` commands, the AES keystore, sidecar spawn) needs WebdriverIO +
+ * `@wdio/tauri-service` (plain tauri-driver is Windows/Linux only; macOS
+ * uses its embedded WebDriver provider) and is tracked as a separate
+ * follow-up in docs/ROADMAP.md.
  *
  * What these specs DO cover: the full React UI against the sidecar HTTP
  * contract. In the browser `isTauri()` is false, so the app already
