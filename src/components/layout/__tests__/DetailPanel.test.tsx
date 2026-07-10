@@ -9,6 +9,7 @@ import type { KnowledgeItem } from "@/types";
 vi.mock("@/lib/api", () => ({
   api: {
     getItem: vi.fn(),
+    updateItemStatus: vi.fn(),
   },
   SIDECAR_BASE: "http://127.0.0.1:8765",
   PrismAPIError: class PrismAPIError extends Error {
@@ -38,7 +39,7 @@ const FAKE_BILI_ITEM: KnowledgeItem = {
   fetchedAt: new Date().toISOString(),
   status: "unread",
   contentType: "video",
-  bvid: "BV1xx411c7mD",
+  metadataJson: { bvid: "BV1xx411c7mD" },
 };
 
 function renderWithQuery(ui: React.ReactNode) {
@@ -51,6 +52,12 @@ function renderWithQuery(ui: React.ReactNode) {
 describe("DetailPanel — Bilibili item", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The panel auto-marks unread items as read on open; give the
+    // status mutation a resolvable default so that background call
+    // never rejects in tests that don't care about it.
+    vi.mocked(api.api.updateItemStatus).mockImplementation(
+      async (_id: string, status) => ({ ...FAKE_BILI_ITEM, status }),
+    );
     usePrismStore.setState({ selectedItemId: null });
   });
 
@@ -88,7 +95,7 @@ describe("DetailPanel — Bilibili item", () => {
     const midOnlyItem: KnowledgeItem = {
       ...FAKE_BILI_ITEM,
       url: "https://space.bilibili.com/339137722",
-      bvid: undefined,
+      metadataJson: {},
     };
     vi.mocked(api.api.getItem).mockResolvedValue(midOnlyItem);
     usePrismStore.setState({ selectedItemId: midOnlyItem.id });
@@ -106,7 +113,7 @@ describe("DetailPanel — Bilibili item", () => {
       ...FAKE_BILI_ITEM,
       id: "it-rss",
       url: "https://example.com/post",
-      bvid: undefined,
+      metadataJson: {},
     };
     vi.mocked(api.api.getItem).mockResolvedValue(rssItem);
     usePrismStore.setState({ selectedItemId: rssItem.id });

@@ -85,7 +85,7 @@ describe("SourcesPage — Add Source dialog", () => {
     expect(optionValues).toContain("bilibili");
   });
 
-  it("submits a Bilibili source with extracted bvid when kind=Bilibili", async () => {
+  it("submits a Bilibili source with the bvid inside configJson when kind=Bilibili", async () => {
     const created: Source = {
       id: "src-bili",
       name: "智东西",
@@ -93,7 +93,7 @@ describe("SourcesPage — Add Source dialog", () => {
       url: "https://www.bilibili.com/video/BV1xx411c7mD",
       enabled: true,
       itemCount: 0,
-      bvid: "BV1xx411c7mD",
+      configJson: { bvid: "BV1xx411c7mD" },
     };
     vi.mocked(api.api.createSource).mockResolvedValue(created);
 
@@ -114,12 +114,15 @@ describe("SourcesPage — Add Source dialog", () => {
     fireEvent.click(submit);
 
     await waitFor(() => {
+      // The bvid MUST travel inside configJson — the sidecar's
+      // SourceCreate model ignores unknown top-level keys, and the
+      // BilibiliFetcher reads only config_json.
       expect(api.api.createSource).toHaveBeenCalledWith({
         name: "智东西",
         kind: "bilibili",
         url: "https://www.bilibili.com/video/BV1xx411c7mD",
         enabled: true,
-        bvid: "BV1xx411c7mD",
+        configJson: { bvid: "BV1xx411c7mD" },
       });
     });
   });
@@ -132,7 +135,7 @@ describe("SourcesPage — Add Source dialog", () => {
       url: "https://www.bilibili.com/video/BV1abc2345de",
       enabled: true,
       itemCount: 12,
-      bvid: "BV1abc2345de",
+      configJson: { bvid: "BV1abc2345de" },
     };
     vi.mocked(api.api.listSources).mockResolvedValue([bili]);
 

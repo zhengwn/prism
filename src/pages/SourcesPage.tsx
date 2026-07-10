@@ -20,6 +20,7 @@ const kindIcon: Record<SourceKind, string> = {
   pdf: "📄",
   file: "📁",
   bilibili: "📺",
+  arxiv: "📜",
 };
 
 const KIND_OPTIONS: SourceKind[] = [
@@ -27,6 +28,7 @@ const KIND_OPTIONS: SourceKind[] = [
   "blog",
   "youtube",
   "podcast",
+  "arxiv",
   "x",
   "pdf",
   "file",
@@ -46,6 +48,117 @@ function bilibiliHint(url: string): string | null {
   // mid page: https://space.bilibili.com/339137722
   const mid = url.match(/space\.bilibili\.com\/(\d+)/i);
   if (mid) return `mid ${mid[1]}`;
+  return null;
+}
+
+/**
+ * Build the `configJson` bag for a new Bilibili source from the URL the
+ * user pasted. The BilibiliFetcher dispatches on `config_json.bvid`
+ * (single video) or `config_json.mid` (UP 主 submissions) — a bilibili
+ * source with an empty bag syncs nothing, so this is the load-bearing
+ * part of the create call.
+ */
+function bilibiliConfigFromUrl(url: string): Record<string, unknown> | undefined {
+  const bv = url.match(/BV[0-9A-Za-z]{8,}/i);
+  if (bv) return { bvid: bv[0] };
+  const mid = url.match(/space\.bilibili\.com\/(\d+)/i);
+  if (mid) return { mid: mid[1] };
+  return undefined;
+}
+
+/** Read the display hint (BV id / mid) off a source, preferring the
+ * authoritative `configJson` and falling back to URL parsing for
+ * sources created before configJson was populated. */
+function bilibiliSourceHint(source: Source): string | null {
+  const cfg = source.configJson ?? {};
+  if (typeof cfg.bvid === "string" && cfg.bvid) return cfg.bvid;
+  if (typeof cfg.mid === "string" || typeof cfg.mid === "number") return `mid ${cfg.mid}`;
+  return bilibiliHint(source.url);
+}
+
+/**
+ * Build the `configJson` bag for a new YouTube source from what the
+ * user pasted. The YouTubeFetcher dispatches on `config_json.channel`
+ * (channel uploads) or `config_json.video` (single video) — same
+ * load-bearing role as `bilibiliConfigFromUrl` above.
+ *
+ * Accepted forms: @handle, channel URL (youtube.com/@handle,
+ * /channel/UC…), watch URL, youtu.be short URL, bare 11-char video id.
+ */
+function youtubeConfigFromUrl(url: string): Record<string, unknown> | undefined {
+  const v = url.trim();
+  if (!v) return undefined;
+  const watch = v.match(/(?:[?&]v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+  if (watch) return { video: watch[1] };
+  if (/^[A-Za-z0-9_-]{11}$/.test(v)) return { video: v };
+  if (v.startsWith("@")) return { channel: v };
+  const handle = v.match(/youtube\.com\/(@[^/?#]+)/i);
+  if (handle) return { channel: handle[1] };
+  const channelId = v.match(/youtube\.com\/channel\/(UC[A-Za-z0-9_-]{10,})/i);
+  if (channelId) return { channel: channelId[1] };
+  if (/^UC[A-Za-z0-9_-]{10,}$/.test(v)) return { channel: v };
+  return undefined;
+}
+
+/**
+ * Build the `configJson` bag for a new arXiv source. The ArxivFetcher
+ * reads `config_json.categories`; the "URL" field doubles as the
+ * category input (comma-separated, e.g. "cs.AI, cs.CL"). An arxiv.org
+ * URL or empty input falls back to the fetcher's defaults.
+ */
+function arxivConfigFromInput(input: string): Record<string, unknown> | undefined {
+  const v = input.trim();
+  if (!v || /arxiv\.org/i.test(v)) return undefined; // fetcher defaults
+  const cats = v
+    .split(",")
+    .map((c) => c.trim())
+    .filter((c) => /^[a-z-]+(\.[A-Za-z-]+)?$/.test(c));
+  return cats.length ? { categories: cats } : undefined;
+}
+
+/** Display hint for a YouTube source card (channel handle / video id). */
+function youtubeSourceHint(source: Source): string | null {
+  const cfg = source.configJson ?? {};
+  if (typeof cfg.channel === "string" && cfg.channel) return cfg.channel;
+  if (typeof cfg.video === "string" && cfg.video) return cfg.video;
+  const parsed = youtubeConfigFromUrl(source.url ?? "");
+  if (parsed?.channel) return String(parsed.channel);
+  if (parsed?.video) return String(parsed.video);
+  return null;
+}
+
+/**
+ * Build the `configJson` bag for a new X (Twitter) source.
+ *
+ * X has no free/stable no-auth timeline API, so the PoC XFetcher consumes
+ * a *bridge feed* (self-hosted RSSHub `/twitter/user/:handle` or a Nitter
+ * `/:handle/rss`). The single URL field therefore expects a full bridge
+ * feed URL → stored as `config_json.feed_url` (the fetcher's highest-
+ * precedence input). A bare @handle / x.com profile URL can't be fetched
+ * without knowing the user's bridge host, so we leave the bag empty and
+ * let the sidecar surface a `retryable=False` "needs config_json.bridge"
+ * error in `sources.last_error`.
+ */
+function xConfigFromUrl(url: string): Record<string, unknown> | undefined {
+  const v = url.trim();
+  if (!v) return undefined;
+  const isDirectFeed =
+    /^https?:\/\//i.test(v) && !/(^|\/\/|\.)((x)|(twitter))\.com(\/|$)/i.test(v);
+  return isDirectFeed ? { feed_url: v } : undefined;
+}
+
+/** Extract a display handle for an X source card, if one is discoverable
+ * from the stored feed URL (`…/twitter/user/<handle>` or `…/<handle>/rss`). */
+function xSourceHint(source: Source): string | null {
+  const cfg = source.configJson ?? {};
+  const feed =
+    (typeof cfg.feed_url === "string" && cfg.feed_url) || source.url || "";
+  const user = feed.match(/twitter\/user\/([A-Za-z0-9_]{1,15})/i);
+  if (user) return `@${user[1]}`;
+  const nitter = feed.match(/\/([A-Za-z0-9_]{1,15})\/rss(?:$|[?#])/i);
+  if (nitter) return `@${nitter[1]}`;
+  const handle = source.url?.match(/^@?([A-Za-z0-9_]{1,15})$/);
+  if (handle) return `@${handle[1]}`;
   return null;
 }
 
@@ -163,7 +276,33 @@ function SourceCard({
             >
               {t("sources.addDialog.badgeBilibili")}
               {(() => {
-                const hint = source.bvid ?? bilibiliHint(source.url);
+                const hint = bilibiliSourceHint(source);
+                return hint ? <span className="ml-1 opacity-70">· {hint}</span> : null;
+              })()}
+            </Badge>
+          )}
+          {source.kind === "youtube" && (
+            <Badge
+              variant="outline"
+              className="ml-1 gap-0.5 border-red-500/40 bg-red-500/10 text-[10px] text-red-700 dark:text-red-300"
+              data-testid="source-youtube-badge"
+            >
+              {t("sources.addDialog.badgeYoutube")}
+              {(() => {
+                const hint = youtubeSourceHint(source);
+                return hint ? <span className="ml-1 opacity-70">· {hint}</span> : null;
+              })()}
+            </Badge>
+          )}
+          {source.kind === "x" && (
+            <Badge
+              variant="outline"
+              className="ml-1 gap-0.5 border-neutral-500/40 bg-neutral-500/10 text-[10px] text-neutral-700 dark:text-neutral-300"
+              data-testid="source-x-badge"
+            >
+              {t("sources.addDialog.badgeX")}
+              {(() => {
+                const hint = xSourceHint(source);
                 return hint ? <span className="ml-1 opacity-70">· {hint}</span> : null;
               })()}
             </Badge>
@@ -174,7 +313,7 @@ function SourceCard({
         <div className="flex items-center justify-between text-xs text-muted-foreground">
           <span>
             {t("sources.itemsCount", { count: source.itemCount })} · {t("sources.lastSynced")}{" "}
-            {source.lastSyncedAt ? formatRelativeTime(source.lastSyncedAt) : t("sources.lastSyncedNever")}
+            {source.lastSyncedAt ? formatRelativeTime(source.lastSyncedAt, t) : t("sources.lastSyncedNever")}
           </span>
           <div className="flex items-center gap-1">
             <Button
@@ -228,23 +367,43 @@ function AddSourceDialog({
   const urlPlaceholder =
     kind === "bilibili"
       ? t("sources.addDialog.urlPlaceholderBilibili")
-      : t("sources.addDialog.urlPlaceholder");
+      : kind === "youtube"
+        ? t("sources.addDialog.urlPlaceholderYoutube")
+        : kind === "arxiv"
+          ? t("sources.addDialog.urlPlaceholderArxiv")
+          : kind === "x"
+            ? t("sources.addDialog.urlPlaceholderX")
+            : t("sources.addDialog.urlPlaceholder");
 
   const createMut = useMutation({
     mutationFn: () => {
-      // Extract a BV id from the URL if the user pasted one. The
-      // sidecar stores both `bvid` and the original URL inside
-      // `Source.config_json`; the top-level `bvid` is surfaced on
-      // read so the detail panel can embed the player without an
-      // extra round-trip. For non-bilibili kinds we just pass
-      // through unchanged.
-      const bvid = kind === "bilibili" ? bilibiliHint(url) ?? undefined : undefined;
+      // For bilibili sources, parse the pasted URL (BV url / bare BV
+      // id / mid page) into the `configJson` bag the fetcher actually
+      // reads. Sent as `configJson` — the camelCase alias of the
+      // sidecar's `Source.config_json`; a top-level `bvid` key would
+      // be silently dropped by Pydantic.
+      const configJson =
+        kind === "bilibili"
+          ? bilibiliConfigFromUrl(url)
+          : kind === "youtube"
+            ? youtubeConfigFromUrl(url)
+            : kind === "arxiv"
+              ? arxivConfigFromInput(url)
+              : kind === "x"
+                ? xConfigFromUrl(url)
+                : undefined;
+      // arXiv's "URL" field holds categories, not a link — store a
+      // stable arxiv.org URL so the card's hostname link stays sane.
+      const effectiveUrl =
+        kind === "arxiv" && !/^https?:\/\//i.test(url.trim())
+          ? "https://arxiv.org"
+          : url;
       return api.createSource({
         name,
         kind,
-        url,
+        url: effectiveUrl,
         enabled: true,
-        ...(bvid ? { bvid } : {}),
+        ...(configJson ? { configJson } : {}),
       });
     },
     onSuccess: () => {
@@ -405,6 +564,7 @@ function kindLabel(k: SourceKind, t: (key: string) => string): string {
     pdf: t("sources.addDialog.kindPdf"),
     file: t("sources.addDialog.kindFile"),
     bilibili: t("sources.addDialog.kindBilibili"),
+    arxiv: t("sources.addDialog.kindArxiv"),
   };
   return map[k];
 }

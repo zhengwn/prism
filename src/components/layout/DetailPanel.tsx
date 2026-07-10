@@ -1,7 +1,7 @@
-import { useState } from "react";
-import { X, ExternalLink, Sparkles, Hash, PlayCircle } from "lucide-react";
+import { useEffect, useState } from "react";
+import { X, ExternalLink, Sparkles, Hash, PlayCircle, Star, Archive } from "lucide-react";
 import { usePrismStore } from "@/store";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -10,7 +10,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatRelativeTime, cn } from "@/lib/utils";
 import { useLanguage } from "@/hooks/useLanguage";
 import { parseInline, splitParagraphs } from "@/lib/inline-markdown";
-import type { KnowledgeItem } from "@/types";
+import type { ItemStatus, KnowledgeItem } from "@/types";
 
 type Lang = "zh" | "en";
 
@@ -52,11 +52,31 @@ export function DetailPanel() {
   const [overrideLang, setOverrideLang] = useState<Lang | null>(null);
   const activeLang: Lang = overrideLang ?? (language === "en" ? "en" : "zh");
 
+  const qc = useQueryClient();
   const { data: item, isLoading } = useQuery({
     queryKey: ["item", selectedItemId],
     queryFn: () => api.getItem(selectedItemId!),
     enabled: !!selectedItemId,
   });
+
+  const statusMut = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: ItemStatus }) =>
+      api.updateItemStatus(id, status),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["item", selectedItemId] });
+      qc.invalidateQueries({ queryKey: ["items"] });
+    },
+  });
+
+  // Opening an unread item marks it read — this is what makes the
+  // inbox's "unread" filter mean something. Starred/archived items
+  // are left alone (those are explicit user choices).
+  useEffect(() => {
+    if (item && item.status === "unread") {
+      statusMut.mutate({ id: item.id, status: "read" });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item?.id, item?.status]);
 
   if (!selectedItemId) {
     return (
@@ -98,12 +118,61 @@ export function DetailPanel() {
                 {localized?.title}
               </h2>
               <p className="text-xs text-muted-foreground">
-                {item?.sourceName} · {item && formatRelativeTime(item.publishedAt)}
+                {item?.sourceName} · {item && formatRelativeTime(item.publishedAt, t)}
               </p>
             </>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {/* Star / archive toggles — the write path behind the inbox
+              status filters. Statuses are one-dimensional (unread /
+              read / starred / archived), matching the sidecar model:
+              toggling off returns the item to "read". */}
+          {item && (
+            <>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 shrink-0"
+                disabled={statusMut.isPending}
+                onClick={() =>
+                  statusMut.mutate({
+                    id: item.id,
+                    status: item.status === "starred" ? "read" : "starred",
+                  })
+                }
+                aria-label={item.status === "starred" ? t("detail.unstar") : t("detail.star")}
+                title={item.status === "starred" ? t("detail.unstar") : t("detail.star")}
+                data-testid="detail-star-toggle"
+              >
+                <Star
+                  className={cn(
+                    "h-4 w-4",
+                    item.status === "starred" && "fill-amber-400 text-amber-400",
+                  )}
+                />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 shrink-0"
+                disabled={statusMut.isPending}
+                onClick={() =>
+                  statusMut.mutate({
+                    id: item.id,
+                    status: item.status === "archived" ? "read" : "archived",
+                  })
+                }
+                aria-label={item.status === "archived" ? t("detail.unarchive") : t("detail.archive")}
+                title={item.status === "archived" ? t("detail.unarchive") : t("detail.archive")}
+                data-testid="detail-archive-toggle"
+              >
+                <Archive
+                  className={cn("h-4 w-4", item.status === "archived" && "text-primary")}
+                />
+              </Button>
+            </>
+          )}
           {/* Bilingual toggle — only render when both languages exist. */}
           {(hasEn && hasZh) && (
             <div
@@ -148,22 +217,30 @@ export function DetailPanel() {
             <>
               {/* Bilibili video — embedded player (v0.2c).
                   We detect a B station item two ways:
-                    1. `item.bvid` is set (preferred — the sidecar
-                       stores it on the item when the source is
-                       a `kind: "bilibili"` source). This is the
-                       forward path and lets us embed the official
-                       player iframe.
+                    1. `item.metadataJson.bvid` is set (preferred —
+                       the BilibiliFetcher stamps it into the item's
+                       metadata). This is the forward path and lets
+                       us embed the official player iframe.
                     2. `item.url` contains "bilibili.com" — covers
-                       legacy items ingested before `bvid` was
-                       added, and URLs that point at the canonical
-                       watch page.
-                  When the item is B station but `bvid` is missing,
+                       legacy items and canonical watch-page URLs.
+                  When the item is B station but the bvid is missing,
                   we fall back to a "open on Bilibili" link so the
                   user can still watch it; the iframe can't render
                   without a BV id. */}
               {isBilibiliItem(item) && (
                 <BilibiliPlayer
-                  bvid={item.bvid ?? extractBvidFromUrl(item.url)}
+                  bvid={itemBvid(item)}
+                  title={localized?.title ?? item.title}
+                />
+              )}
+
+              {/* YouTube video — embedded player (v0.2c). Same
+                  detection pattern as Bilibili: prefer the fetcher-
+                  stamped `metadataJson.video_id`, fall back to URL
+                  parsing for robustness. */}
+              {isYouTubeItem(item) && (
+                <YouTubePlayer
+                  videoId={itemYouTubeId(item)}
                   title={localized?.title ?? item.title}
                 />
               )}
@@ -327,6 +404,18 @@ export function DetailPanel() {
               {t("inbox.openOnBilibili")}
             </a>
           )}
+          {isYouTubeItem(item) && (
+            <a
+              href={item.url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/10 px-3 text-xs font-medium text-red-700 hover:bg-red-500/20 dark:text-red-300"
+              data-testid="detail-open-youtube"
+            >
+              <PlayCircle className="h-3.5 w-3.5" />
+              {t("inbox.openOnYoutube")}
+            </a>
+          )}
         </div>
       )}
     </aside>
@@ -363,13 +452,25 @@ function LangPill({
 // ----- Bilibili helpers & player ------------------------------------------
 
 /**
- * Heuristic: an item is "B station" if either the structured `bvid`
- * field is set OR the URL points at bilibili.com. The former is
- * authoritative; the latter is a safety net for legacy items ingested
- * before the sidecar started stamping `bvid` on the row.
+ * The BV id for a bilibili item. The authoritative copy lives in
+ * `metadataJson.bvid` (the BilibiliFetcher stamps it there); the URL
+ * parse is a safety net for legacy rows. (The old top-level `item.bvid`
+ * field never existed in the sidecar's response — it was always
+ * undefined, so the URL fallback was silently doing all the work.)
+ */
+function itemBvid(item: KnowledgeItem): string | undefined {
+  const fromMeta = item.metadataJson?.bvid;
+  if (typeof fromMeta === "string" && fromMeta) return fromMeta;
+  return extractBvidFromUrl(item.url);
+}
+
+/**
+ * Heuristic: an item is "B station" if the fetcher stamped a `bvid`
+ * into its metadata OR the URL points at bilibili.com (safety net
+ * for legacy rows).
  */
 function isBilibiliItem(item: KnowledgeItem): boolean {
-  if (item.bvid) return true;
+  if (typeof item.metadataJson?.bvid === "string" && item.metadataJson.bvid) return true;
   return /bilibili\.com/i.test(item.url ?? "");
 }
 
@@ -395,6 +496,65 @@ function extractBvidFromUrl(url: string): string | undefined {
  * why the embed is absent and offering the "open on Bilibili"
  * link in the footer as a substitute.
  */
+// ----- YouTube helpers & player --------------------------------------------
+
+/**
+ * The YouTube video id for an item. Authoritative copy is
+ * `metadataJson.video_id` (the YouTubeFetcher stamps it there);
+ * URL parsing is the safety net, same policy as `itemBvid`.
+ */
+function itemYouTubeId(item: KnowledgeItem): string | undefined {
+  const fromMeta = item.metadataJson?.video_id;
+  if (typeof fromMeta === "string" && fromMeta) return fromMeta;
+  const m = item.url?.match(/(?:[?&]v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+  return m ? m[1] : undefined;
+}
+
+function isYouTubeItem(item: KnowledgeItem): boolean {
+  const feedKind = item.metadataJson?.feed_kind;
+  if (typeof feedKind === "string" && feedKind === "youtube") return true;
+  return /youtube\.com\/watch|youtu\.be\//i.test(item.url ?? "");
+}
+
+/**
+ * Embed the privacy-enhanced YouTube player (youtube-nocookie.com).
+ * autoplay stays off for the same reason as the Bilibili player.
+ * Missing video id → fallback card; the footer "open on YouTube"
+ * link is the substitute.
+ */
+function YouTubePlayer({ videoId, title }: { videoId?: string; title: string }) {
+  const { t } = useLanguage();
+  if (!videoId) {
+    return (
+      <section
+        className="rounded-md border border-dashed border-red-500/30 bg-red-500/5 p-3 text-xs text-red-700 dark:text-red-300"
+        data-testid="detail-youtube-missing"
+      >
+        {t("inbox.youtubeSourceMissing")}
+      </section>
+    );
+  }
+  const src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(videoId)}`;
+  return (
+    <section className="space-y-1.5" data-testid="detail-youtube-player">
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        {t("inbox.youtubePlayer")}
+      </h3>
+      <div className="relative aspect-video w-full overflow-hidden rounded-md border border-red-500/30 bg-black">
+        <iframe
+          src={src}
+          title={`YouTube player — ${title}`}
+          allowFullScreen
+          frameBorder="0"
+          allow="encrypted-media; picture-in-picture"
+          sandbox="allow-same-origin allow-scripts allow-popups allow-presentation"
+          className="absolute inset-0 h-full w-full"
+        />
+      </div>
+    </section>
+  );
+}
+
 function BilibiliPlayer({ bvid, title }: { bvid?: string; title: string }) {
   const { t } = useLanguage();
   if (!bvid) {

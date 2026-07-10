@@ -53,16 +53,6 @@ export function InboxPage() {
     return () => window.clearTimeout(handle);
   }, [searchQuery]);
 
-  const { data: items, isLoading } = useQuery({
-    queryKey: ["items", { q: debouncedQuery }],
-    queryFn: () => api.listItems({ q: debouncedQuery || undefined }),
-  });
-
-  const { data: sources } = useQuery({
-    queryKey: ["sources"],
-    queryFn: () => api.listSources(),
-  });
-
   const qc = useQueryClient();
   const selectedSourceId = usePrismStore((s) => s.selectedSourceId);
   const setSelectedSource = usePrismStore((s) => s.setSelectedSource);
@@ -72,6 +62,27 @@ export function InboxPage() {
   const setStatusFilter = usePrismStore((s) => s.setStatusFilter);
   const { t, language } = useLanguage();
   const preferEn = language === "en";
+
+  // Source / status filters are applied server-side (see api.listItems) —
+  // they used to be client-side-only, which silently broke once a source
+  // had more than the default page size of items (the filter only ever
+  // saw the first page). Keeping them in the query key means switching a
+  // filter refetches the *filtered* set from the sidecar instead of
+  // re-slicing whatever happened to already be in memory.
+  const { data: items, isLoading } = useQuery({
+    queryKey: ["items", { q: debouncedQuery, sourceId: selectedSourceId, status: statusFilter }],
+    queryFn: () =>
+      api.listItems({
+        q: debouncedQuery || undefined,
+        sourceId: selectedSourceId ?? undefined,
+        status: statusFilter,
+      }),
+  });
+
+  const { data: sources } = useQuery({
+    queryKey: ["sources"],
+    queryFn: () => api.listSources(),
+  });
 
   // Sync button state. `idle` is the default. While a sync is running we
   // lock the button. After it finishes we briefly show "success" or
@@ -128,8 +139,12 @@ export function InboxPage() {
       // Now flip the button state to match the final status.
       // 'done' and 'cancelled' both count as "not an error" —
       // the user cancelled deliberately, not because the
-      // pipeline broke.
-      if (final.status === "cancelled") {
+      // pipeline broke. A job still 'running' after the poll
+      // deadline is neither: tell the user it's still going in
+      // the background instead of showing a bogus success toast.
+      if (final.status === "running") {
+        setToast({ kind: "info", text: t("inbox.syncStillRunning") });
+      } else if (final.status === "cancelled") {
         setToast({
           kind: "info",
           text: t("inbox.syncResultCancelled", {
@@ -187,18 +202,9 @@ export function InboxPage() {
     }
   };
 
-  // Client-side filters: source / status. The text search is now
-  // server-side via FTS5 (see useQuery above); everything else
-  // stays here because it's cheap and changes immediately when
-  // the user toggles a filter, whereas a server roundtrip would
-  // flash a loading state for half a second.
-  const filteredItems: KnowledgeItem[] = (items ?? []).filter((it) => {
-    if (selectedSourceId && it.sourceId !== selectedSourceId) return false;
-    if (statusFilter === "unread" && it.status !== "unread") return false;
-    if (statusFilter === "starred" && it.status !== "starred") return false;
-    if (statusFilter === "archived" && it.status !== "archived") return false;
-    return true;
-  });
+  // Source / status / text search are all applied server-side now (see
+  // the useQuery above) — `items` already reflects the current filters.
+  const filteredItems: KnowledgeItem[] = items ?? [];
 
   return (
     <div className="flex h-full">
@@ -398,7 +404,7 @@ function ItemRow({
                 {item.sourceName}
               </Badge>
               <span>·</span>
-              <span>{formatRelativeTime(item.publishedAt)}</span>
+              <span>{formatRelativeTime(item.publishedAt, t)}</span>
               {item.status === "starred" && <Star className="h-3 w-3 fill-amber-400 text-amber-400" />}
               {item.status === "read" && <CheckCircle2 className="h-3 w-3 text-emerald-500" />}
               {!item.distilledAt && (

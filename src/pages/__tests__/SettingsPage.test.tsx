@@ -118,6 +118,8 @@ describe("SettingsPage — Provider switcher (AiSection)", () => {
       version: "test",
       sourcesCount: 0,
       itemsCount: 0,
+      distillerConfigured: false,
+      dbPath: "/tmp/test.db",
       uptimeSec: 0,
     });
     vi.mocked(api.api.getPendingDistillCount).mockResolvedValue({ pending: 0 });

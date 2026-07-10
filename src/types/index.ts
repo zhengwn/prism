@@ -3,7 +3,7 @@
  * Keep these in sync with `python/prism_sidecar/models.py`.
  */
 
-export type SourceKind = "rss" | "youtube" | "podcast" | "blog" | "x" | "pdf" | "file" | "bilibili";
+export type SourceKind = "rss" | "youtube" | "podcast" | "blog" | "x" | "pdf" | "file" | "bilibili" | "arxiv";
 
 export interface Source {
   id: string;
@@ -12,16 +12,18 @@ export interface Source {
   url: string;
   enabled: boolean;
   lastSyncedAt?: string;
+  lastError?: string | null;
   itemCount: number;
   /**
-   * Bilibili-specific extension: either a BV id (when the source
-   * is a single video) or a UP 主 mid (when the source is a
-   * user's submissions). v0.2c stores both `mid` and `bvid`
-   * inside `config_json` server-side, but the front-end surfaces
-   * the BV id at the item level so the DetailPanel can embed a
-   * player without an extra round-trip.
+   * Per-source config bag, mirrored from the sidecar's
+   * `Source.config_json`. For `kind: "bilibili"` this is where the
+   * `bvid` (single video) or `mid` (UP 主 submissions) lives — the
+   * BilibiliFetcher reads ONLY this bag to decide what to fetch, so
+   * the create-source dialog must populate it. (The old top-level
+   * `bvid` field was never accepted nor returned by the sidecar;
+   * sources created with it silently synced nothing.)
    */
-  bvid?: string;
+  configJson?: Record<string, unknown>;
 }
 
 export type ItemStatus = "unread" | "read" | "archived" | "starred";
@@ -63,11 +65,12 @@ export interface KnowledgeItem {
   durationSec?: number;
   contentType: "video" | "audio" | "article" | "paper" | "post";
   /**
-   * Bilibili BV id. Present only when the item came from a
-   * `kind: "bilibili"` source. DetailPanel uses it to embed the
-   * official player iframe (`https://player.bilibili.com/player.html?bvid=...`).
+   * Fetcher-specific metadata, mirrored from the sidecar's
+   * `metadata_json`. Bilibili items carry `bvid` here (the
+   * DetailPanel uses it to embed the official player iframe);
+   * RSS items carry `feed_kind`, etc.
    */
-  bvid?: string;
+  metadataJson?: Record<string, unknown>;
 }
 
 export interface PrismHealth {
@@ -75,6 +78,8 @@ export interface PrismHealth {
   version: string;
   sourcesCount: number;
   itemsCount: number;
+  distillerConfigured: boolean;
+  dbPath: string;
   uptimeSec: number;
 }
 

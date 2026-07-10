@@ -102,8 +102,14 @@ export function Sidebar() {
           <CircleDot className="h-3 w-3 text-emerald-500" />
           <span>{t("sidebar.sidecarConnected")}</span>
         </div>
+        {/* Hard-coded version string — this drifted to "v0.1.0" for a
+            long time while package.json/Cargo.toml/tauri.conf.json/
+            pyproject.toml all moved on, because nothing wires this up
+            to an actual version source. Bump it by hand alongside
+            package.json's "version" until someone plumbs
+            `import.meta.env` (or a Vite `define`) through instead. */}
         <div className="mt-1 truncate opacity-70">
-          v0.1.0 · {location.pathname}
+          v0.2.0 · {location.pathname}
         </div>
       </div>
     </aside>

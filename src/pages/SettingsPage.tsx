@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Trans } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
-import { api, SIDECAR_BASE } from "@/lib/api";
+import { api, isTauri, SIDECAR_BASE } from "@/lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,20 @@ export function SettingsPage() {
   });
   const { theme, setTheme, resolvedTheme } = useTheme();
   const { language, setLanguage } = useLanguage();
+  const queryClient = useQueryClient();
+
+  // Manual sidecar restart (Settings → Sidecar card). Picks up a
+  // newly-saved key / hand-edited keystore without relaunching the app.
+  // The Tauri command returns immediately (background respawn), so after
+  // it resolves we wait a beat for the new process to bind, then refetch
+  // health so the version/uptime row reflects the fresh process.
+  const restartMut = useMutation({
+    mutationFn: () => api.restartSidecar(),
+    onSuccess: async () => {
+      await new Promise((r) => setTimeout(r, 1500));
+      await queryClient.invalidateQueries({ queryKey: ["health"] });
+    },
+  });
 
   return (
     <div className="h-full overflow-y-auto p-6">
@@ -183,6 +197,33 @@ export function SettingsPage() {
                   : "—"
               }
             />
+            <Separator className="my-1" />
+            <div className="flex items-center justify-between gap-3 pt-1">
+              <p className="text-xs text-muted-foreground">
+                {t("settings.restartSidecarHint")}
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => restartMut.mutate()}
+                disabled={restartMut.isPending}
+                className="shrink-0"
+              >
+                {restartMut.isPending ? (
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-2 h-3.5 w-3.5" />
+                )}
+                {restartMut.isPending
+                  ? t("settings.restartSidecarPending")
+                  : t("settings.restartSidecar")}
+              </Button>
+            </div>
+            {restartMut.isError && (
+              <p className="text-xs text-destructive">
+                {t("settings.restartSidecarError")}
+              </p>
+            )}
           </CardContent>
         </Card>
 
@@ -343,6 +384,14 @@ function AiSection() {
     // isn't one, flip into editing instead so the user can type a
     // brand-new one without confusion.
     if (!llmConfig?.configured || !selectedProvider) {
+      setApiKeyMode("editing");
+      setApiKey("");
+      return;
+    }
+    // Pure-Vite dev: no Tauri shell → no keystore to reveal from.
+    // Bail into editing instead of letting `invoke` throw
+    // "__TAURI_INTERNALS__ is undefined" into the console.
+    if (!isTauri()) {
       setApiKeyMode("editing");
       setApiKey("");
       return;

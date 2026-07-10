@@ -17,6 +17,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   DistillProgress,
+  ItemStatus,
   KnowledgeItem,
   LlmConfig,
   LlmConfigUpdate,
@@ -54,7 +55,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
  * throw a noisy "window.__TAURI_INTERNALS__ is undefined" — guard the
  * keychain calls with this.
  */
-function isTauri(): boolean {
+export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
@@ -66,20 +67,17 @@ export const api = {
   listSources: () => request<Source[]>("/api/sources"),
   getSource: (id: string) => request<Source>(`/api/sources/${id}`),
   /**
-   * Create a source. The base shape is `Omit<Source, ...server-set fields>`
-   * plus an optional `bvid` and an open-ended `config` bag — the sidecar
-   * stores `bvid` / `mid` inside `Source.config_json`, but the front-end
-   * surfaces a top-level `bvid` for read ergonomics.
-   *
-   * v0.2c (Bilibili): `kind: "bilibili"` is accepted by the sidecar as a
-   * valid source kind; the server routes it to `BilibiliFetcher`. The
-   * front-end only needs to pass the kind + a URL (BV id or mid page) +
-   * optional bvid and the sidecar handles the rest.
+   * Create a source. The body keys must match the sidecar's
+   * `SourceCreate` model (camelCase aliases): `name`, `kind`, `url`,
+   * `enabled`, `configJson`. Anything else is silently ignored by
+   * Pydantic — which is exactly how the old top-level `bvid` field
+   * got dropped and Bilibili sources ended up with an empty
+   * `config_json` (and synced nothing). For `kind: "bilibili"` the
+   * caller MUST put `{ bvid }` or `{ mid }` into `configJson`; the
+   * `BilibiliFetcher` dispatches on that bag alone.
    */
   createSource: (
-    data: Omit<Source, "id" | "itemCount" | "lastSyncedAt"> & {
-      config?: Record<string, unknown>;
-    },
+    data: Omit<Source, "id" | "itemCount" | "lastSyncedAt" | "lastError">,
   ) =>
     request<Source>("/api/sources", {
       method: "POST",
@@ -87,7 +85,7 @@ export const api = {
     }),
   patchSource: (
     id: string,
-    data: Partial<Pick<Source, "name" | "url" | "enabled" | "bvid">>,
+    data: Partial<Pick<Source, "name" | "url" | "enabled" | "configJson">>,
   ) =>
     request<Source>(`/api/sources/${id}`, {
       method: "PATCH",
@@ -97,15 +95,43 @@ export const api = {
     request<{ ok: true }>(`/api/sources/${id}`, { method: "DELETE" }),
 
   // ----- Items -----
-  listItems: (params?: { sourceId?: string; status?: string; q?: string }) => {
+  /**
+   * GET /api/items — server-side filtering. The query string keys MUST
+   * match the FastAPI parameter names exactly (`source_id`, `status`,
+   * `q`, `limit`, `offset`) — FastAPI does not camelCase-alias query
+   * params, so `?sourceId=` would silently be ignored and the caller
+   * would get an unfiltered page back. `limit` defaults to the
+   * backend's max (200) since the UI doesn't yet have pagination /
+   * "load more"; without it the backend's own default (50) would
+   * silently truncate the list before the source/status filters below
+   * even apply.
+   */
+  listItems: (params?: {
+    sourceId?: string;
+    status?: string;
+    q?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
     const search = new URLSearchParams();
-    if (params?.sourceId) search.set("sourceId", params.sourceId);
-    if (params?.status) search.set("status", params.status);
+    if (params?.sourceId) search.set("source_id", params.sourceId);
+    if (params?.status && params.status !== "all") search.set("status", params.status);
     if (params?.q) search.set("q", params.q);
+    search.set("limit", String(params?.limit ?? 200));
+    if (params?.offset) search.set("offset", String(params.offset));
     const qs = search.toString();
     return request<KnowledgeItem[]>(`/api/items${qs ? `?${qs}` : ""}`);
   },
   getItem: (id: string) => request<KnowledgeItem>(`/api/items/${id}`),
+  /**
+   * PATCH /api/items/{id} — set the read/starred/archived status.
+   * This is the write path behind the inbox status filters.
+   */
+  updateItemStatus: (id: string, status: ItemStatus) =>
+    request<KnowledgeItem>(`/api/items/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }),
 
   // ----- Sync -----
   /**
@@ -193,6 +219,25 @@ export const api = {
     return request<LlmConfig>("/api/settings/llm");
   },
   /**
+   * Manually restart the Python sidecar (Tauri only).
+   *
+   * The Tauri command fires a background kill+respawn and returns
+   * immediately; callers should poll `health()` (version/uptime reset)
+   * to detect the new process. Outside the Tauri shell there is no
+   * child process to restart, so this is a no-op that resolves — the
+   * sidecar is managed externally (`npm run sidecar:dev`) in that case.
+   */
+  restartSidecar: async (): Promise<void> => {
+    if (isTauri()) {
+      await invoke("restart_sidecar");
+      return;
+    }
+    console.warn(
+      "[prism] restartSidecar is a no-op in browser dev; the sidecar is " +
+      "managed externally (npm run sidecar:dev).",
+    );
+  },
+  /**
    * Save the active LLM configuration.
    *
    * Two paths:
@@ -209,9 +254,22 @@ export const api = {
     if (isTauri()) {
       return invoke<LlmConfig>("set_llm_config", { config: update });
     }
+    // Vite dev fallback. The sidecar HTTP endpoint rejects any body
+    // containing `apiKey` with a 400 ("keys never transit HTTP") — the
+    // old code forwarded the field anyway, so saving a key in pure-Vite
+    // dev always produced the red error toast (ROADMAP: "Vite 调试下
+    // setApiKey 抛错"). Strip it and warn instead: provider/model
+    // changes still apply; key persistence genuinely needs Tauri.
+    const { apiKey, ...rest } = update;
+    if (apiKey) {
+      console.warn(
+        "[prism] API key can only be saved from the Tauri app (local keystore); " +
+        "ignoring the key in browser dev. Provider/model changes still apply.",
+      );
+    }
     return request<LlmConfig>("/api/settings/llm", {
       method: "POST",
-      body: JSON.stringify(update),
+      body: JSON.stringify(rest),
     });
   },
 
