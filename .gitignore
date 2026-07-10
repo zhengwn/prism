@@ -47,6 +47,11 @@ node_modules/
 dist/
 build/
 out/
+
+# Playwright E2E artifacts
+test-results/
+playwright-report/
+playwright/.cache/
 coverage/
 *.tsbuildinfo
 .eslintcache
