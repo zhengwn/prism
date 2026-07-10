@@ -42,10 +42,13 @@ prism/
 ├── src-tauri/            # Tauri 2 Rust shell
 │   ├── src/
 │   │   ├── main.rs       # Binary entry
-│   │   ├── lib.rs        # tauri::Builder setup
-│   │   └── sidecar.rs    # Python sidecar spawn + IPC
+│   │   ├── lib.rs        # tauri::Builder setup + one-shot keychain→keystore migration
+│   │   ├── sidecar.rs    # Python sidecar spawn + env injection + process-tree kill
+│   │   ├── secrets.rs    # Tauri IPC commands + LLM config payload types (thin forwarder to keystore.rs)
+│   │   └── keystore.rs   # local AES-256-GCM encrypted-file keystore (replaces OS keychain)
 │   ├── capabilities/     # Permissions (windows + commands)
 │   ├── icons/            # App icons (placeholder PNGs for v0.1)
+│   ├── tests/            # keystore_smoke.rs (8 case) + llm_config_smoke.rs (9 case)
 │   ├── Cargo.toml
 │   └── tauri.conf.json
 ├── python/               # Python sidecar (FastAPI + uvicorn)
@@ -53,17 +56,20 @@ prism/
 │   ├── pytest.ini        # pytest 配置
 │   ├── prism_sidecar/
 │   │   ├── __main__.py   # CLI entry: `uv run prism-sidecar`
-│   │   ├── app.py        # FastAPI app, routes, CORS
+│   │   ├── app.py        # FastAPI app, routes, CORS (thin — orchestration lives in pipeline/orchestrator.py)
 │   │   ├── models.py     # Pydantic v2 models with bilingual KnowledgeItem (mirror src/types/index.ts)
-│   │   ├── db.py         # aiosqlite + schema migration (v0.2a)
-│   │   ├── store.py      # SQLite-backed CRUD (v0.2a)
-│   │   ├── scheduler.py  # APScheduler integration (v0.2a)
+│   │   ├── db.py         # aiosqlite + schema migration (v2 adds FTS5)
+│   │   ├── fts5.py       # SQLite FTS5 full-text search (v0.2b)
+│   │   ├── progress.py   # in-memory distill-progress store, feeds the SSE stream (v0.2b)
+│   │   ├── settings.py   # PROVIDER_SCHEMAS + active_provider.json R/W
+│   │   ├── store.py      # SQLite-backed CRUD
+│   │   ├── scheduler.py  # APScheduler integration
 │   │   ├── config.py     # env-based config (DEEPSEEK_API_KEY, PRISM_DATA_DIR, …)
-│   │   ├── fetchers/     # Fetcher Protocol + RSS + HackerNews (v0.2a)
-│   │   ├── distillers/   # Distiller Protocol + DeepSeek via litellm (v0.2a)
-│   │   ├── pipeline/     # sync orchestration (v0.2a)
-│   │   └── data/fixtures.py  # 5 seed sources (HN + 4 RSS)
-│   ├── tests/            # pytest 38 case (rss/hn/distiller/store/sync/api)
+│   │   ├── fetchers/     # Fetcher Protocol + FetchError 契约 + retry/throttle + RSS + HN + Bilibili + YouTube + Podcast + arXiv (v0.2c)
+│   │   ├── distillers/   # Distiller Protocol + DeepSeek + MiniMax via litellm + bilibili_prompt.py
+│   │   ├── pipeline/     # sync.py (per-source) + orchestrator.py (job concurrency/cancel) + distill.py (redistill batch)
+│   │   └── data/fixtures.py  # 8 seed sources (HN + 3 Bilibili PoC + 4 RSS)
+│   ├── tests/            # pytest 249 case（实跑核对）(rss/hn/bilibili/youtube/podcast/arxiv/x/retry/distiller/store/sync/api/fts5/settings/fetcher-registry…)
 │   └── README.md
 ├── docs/                 # ROADMAP.md, ARCHITECTURE.md
 ├── public/               # Static assets (favicon, etc.)
@@ -71,6 +77,33 @@ prism/
 ├── BRAND.md              # Brand guide (name, slogan, visual direction)
 └── README.md             # Project overview
 ```
+
+## Language split: Python-first (project rule)
+
+Business logic lives in the **Python sidecar** — that is a deliberate,
+standing decision, not an accident of history. When adding a feature,
+default to `python/prism_sidecar/`; the Rust layer is a frozen shell
+with exactly three jobs:
+
+1. **Tauri 2 shell** (`main.rs` / `lib.rs`) — mandatory Rust, no choice.
+2. **Sidecar process management** (`sidecar.rs`) — spawn/kill/restart +
+   env injection must be done by the parent process, which is Tauri.
+3. **Keystore + secrets IPC** (`keystore.rs` / `secrets.rs`) — stays in
+   Rust on purpose: keys are injected into the sidecar's env at spawn
+   time (only the parent can do that), Settings must work even when the
+   sidecar is down, and the "keys never transit sidecar HTTP" security
+   boundary depends on key handling living in the Tauri trust domain.
+
+Everything else — fetchers, distillers, storage, search, sync
+orchestration, scheduling, settings — is Python. Do NOT add new
+business logic, new Tauri commands wrapping business logic, or new
+Rust crates for things the sidecar could do over HTTP. If a change
+seems to need Rust and isn't one of the three jobs above, stop and
+ask the user first.
+
+Known cost of this choice: distribution requires bundling a Python
+runtime with the sidecar (python-build-standalone / PyInstaller) —
+tracked as the v0.4 packaging task in `docs/ROADMAP.md`.
 
 ## Code style
 
@@ -114,21 +147,23 @@ best-practice, so they live here rather than in agent memory.
 
 ## Testing instructions
 
-- **v0.2b 测试覆盖**（已实现，v0.2a 之后 +76 case）：
-  - **Python sidecar**：`cd python && uv run pytest -v` — 114 case（rss 5 / hn 3 / distiller 8 / store 8 / sync 5 / api 9 → v0.2b 新增 FTS5 14 + cancel 3 + smart-quote 解析等 38+）
-  - **React 组件**：`cd src && npx vitest run` — 32 case（v0.2a 7 + v0.2b 新增 inline-markdown 10 + InboxPage 改写 8 + Settings / Progress 7 等）
-  - **Rust keystore**：`cd src-tauri && cargo test --test keystore_smoke` — 8 case（roundtrip / 0600 perms / 损坏容错 / 并发 / key_last4 / active-provider 校验 / 迁移幂等 / 真 macOS Keychain migration roundtrip）
-  - **端到端**：`npm run smoke` — 启动 sidecar → 同步 → 验 items
-- **手动验证 v0.2b**：
+- **测试覆盖**（v0.2c 收尾时在本机全量实跑核对过，2026-07-10；下面的数字是真跑出来的，不是数 `def test_` 数出来的）：
+  - **Python sidecar**：`cd python && uv run pytest -v` — **249/249 绿**（rss / hn / bilibili / youtube / podcast / arxiv / x fetcher + prompt / retry+throttle / deepseek + minimax distiller / provider registry / store / sync / api / settings api / FTS5 / fetcher registry 等）
+  - **React 组件**：`npm test` — **28/28 绿**（button / DetailPanel / inline-markdown / InboxPage / SettingsPage / SourcesPage）
+  - **Rust**：`cd src-tauri && cargo test` — **17/17 绿**（keystore_smoke 8 + llm_config_smoke 9）；`cargo check --all-targets` 干净
+  - **前端 E2E**：`npm run test:e2e` — **5/5 绿**（Playwright + hermetic mock sidecar，浏览器层；**挂不到 Tauri 原生 webview**，壳内 `invoke`/keystore 未覆盖）
+  - **端到端**：`npm run smoke` — 启动 sidecar → 同步 → 验 items。⚠️ 该脚本**不隔离 `PRISM_DATA_DIR`**，会跑迁移写你真实的 `~/.prism/data.db`；想安全验证就先 `export PRISM_DATA_DIR=$(mktemp -d) PRISM_DAILY_SYNC_DISABLED=1`
+- **写测试时注意**：只用 Fake fetcher 测 `pipeline/sync.py` 会漏掉真实 fetcher 的签名不匹配——v0.2c 的 `lookback_days` `TypeError` 就是这么在生产里藏了整整一个版本（被 `except Exception` 吞成 per-source fetch error）。至少留一个真实 fetcher 走管线的 case。
+- **手动验证**：
   1. `npm run tauri:dev` 启动 Tauri 窗口
-  2. Sidebar 显示 5 个种子源（HN + Simon + OpenAI + DeepMind + HF）
+  2. Sidebar 显示 8 个种子源（HN + 3 个 Bilibili PoC UP 主 + Simon + OpenAI + DeepMind + HF）
   3. 顶栏点「立即同步」按钮，触发 sync，验证 items 列表刷新
   4. SourcesPage 点 `+` 弹窗加一个新 RSS 源，验证列表更新
   5. SettingsPage 配置 DeepSeek API key（写入 `~/.prism/keystore.json` 加密存储），重启 app 后状态显示「已配置」
-  6. InboxPage 顶部搜索框输入中文 / 英文关键词，验证 FTS5 搜索 ~5ms 命中（v0.2b）
-  7. 蒸馏中点「取消」按钮，验证蓝色 toast + 进度条停止（v0.2b）
-  8. 同步中点 sync 按钮（此时变「取消」），验证下一个 source 边界停止（v0.2b）
-- **v0.2c 起加：** Playwright for Tauri E2E（开 Tauri 窗口跑真实交互）
+  6. InboxPage 顶部搜索框输入中文 / 英文关键词，验证 FTS5 搜索 ~5ms 命中
+  7. 蒸馏中点「取消」按钮，验证蓝色 toast + 进度条停止
+  8. 同步中点 sync 按钮（此时变「取消」），验证下一个 source 边界停止
+- **v0.2c 剩余**：YouTube / X / Podcast / arXiv fetcher、错误重试、Playwright for Tauri E2E（开 Tauri 窗口跑真实交互）
 
 ## PR & commit conventions
 
@@ -152,10 +187,18 @@ best-practice, so they live here rather than in agent memory.
   every launch; the new layout has no OS prompt after the first
   migration run. See `src-tauri/src/keystore.rs` for the on-disk
   format, encryption details, and migration logic.
-- **Key exposure boundary:** 前端只能调 `getApiKeyStatus()` /
-  `get_llm_config()` 拿到 `{configured: boolean}`，**永远拿不到 key
-  值**；key 仅在 Tauri 启动 sidecar 时通过
-  `cmd.env("DEEPSEEK_API_KEY", key)` 注入子进程环境变量
+- **Key exposure boundary:** the *default* read path (`getApiKeyStatus()` /
+  `get_llm_config()`) only ever returns `{configured: boolean}` +
+  `keyLast4` / `keyLength` — never the key value. Key material otherwise
+  only crosses process boundaries when Tauri spawns the sidecar
+  (`cmd.env("DEEPSEEK_API_KEY", key)`). The one deliberate exception is
+  `reveal_llm_key` — a Tauri command the Settings page's "show key" eye
+  toggle calls on explicit user action, which does return the plaintext
+  key to the renderer. That's an intentional, opt-in exception (see the
+  SECURITY note on `reveal_llm_key` in `secrets.rs` for the threat-model
+  argument), not a bug — but don't describe the boundary as "frontend
+  can never get the key" without that caveat, and don't add new callers
+  of `reveal_llm_key` without the same explicit-user-action gate.
 - **One-shot keychain→keystore migration:** `keystore::migrate_from_keychain_if_needed`
   is called once in `lib.rs` setup, **before** the sidecar is spawned.
   Idempotent — once `~/.prism/keystore.json` exists, the migration is
@@ -247,9 +290,16 @@ fresh env) — owned by `tauri-expert` (see commit `e460389`).
 
 **Tauri-side `KNOWN_PROVIDERS`** in `src-tauri/src/secrets.rs` must
 stay in lockstep with the Python `PROVIDER_SCHEMAS` list. The
-`default_model_for()` and `get_provider_schema()` Tauri commands
-both hard-code the same 2 providers — they're the Settings-UI
-fallback when the sidecar isn't up yet.
+`default_model_for()` and `get_provider_schema()` functions both
+hard-code the same 2 providers, and the doc comments describe them
+as a Settings-UI fallback for when the sidecar isn't up yet — but as
+of the v0.2c review, that fallback isn't actually wired up:
+`SettingsPage.tsx` unconditionally calls `api.listProviders()` (the
+sidecar's `GET /api/settings/providers`) with no `invoke("get_provider_schema")`
+fallback anywhere in the frontend. `get_provider_schema`,
+`get_api_key_status`, `set_api_key`, and `clear_api_key` are all
+registered Tauri commands with zero current callers in `src/` — grep
+`invoke(` there before assuming any of them do something live.
 
 ## Theme system (v0.1)
 
@@ -273,6 +323,9 @@ union in `src/lib/theme.ts`, then update both the inline script in
 
 ## What agents should NOT do
 
+- Don't add new business logic to `src-tauri/` — the Rust layer is a
+  frozen shell (see "Language split: Python-first" above); new features
+  go in the Python sidecar
 - Don't modify `tauri.conf.json` productName/identifier without explicit user request
 - Don't add npm/pip deps without asking — keep the dep tree small
 - Don't commit `.env`, `secrets/`, or anything matching `*.pem` / `*.key`

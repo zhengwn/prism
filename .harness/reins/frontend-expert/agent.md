@@ -13,10 +13,12 @@ description: Prism 前端专家，负责 src/ 目录的 React + TypeScript + Vit
   - `src/components/ui/*` — 基础 UI 组件（shadcn 风格手写）
   - `src/components/layout/*` — 布局组件（AppLayout、Sidebar、TopBar、DetailPanel）
   - `src/pages/*` — 路由页面（InboxPage、KnowledgePage、SourcesPage、SettingsPage）
-  - `src/lib/api.ts` — Python sidecar 的 HTTP 客户端
-  - `src/store/*` — Zustand 全局 store
+  - `src/lib/api.ts` — Python sidecar 的 HTTP 客户端（query string 参数名必须跟 FastAPI 路由的参数名一致，比如 `source_id` 不是 `sourceId`——FastAPI 不做驼峰转换）
+  - `src/store/*` — Zustand 全局 store，只放 UI 状态（选中项/筛选条件），服务端数据交给 TanStack Query，不要在 store 里镜像一份
   - `src/types/*` — 共享类型（必须和 `python/prism_sidecar/models.py` 保持一致）
   - `src/styles/*` — Tailwind + CSS variables
+  - `src/hooks/*` — 自定义 hook（useTheme / useLanguage / useDistillProgress）
+  - `src/i18n/*` — en.json / zh.json，新增 key 必须两个文件同时改
 - **Don't own**: 
   - `src-tauri/` → 交给 tauri-expert
   - `python/` → 交给 sidecar-expert

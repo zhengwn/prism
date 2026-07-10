@@ -1,6 +1,8 @@
 # Prism — Roadmap
 
-> 公开 v1.0 之前的规划。v0.2b 是当前完成点，下一站 v0.2c（多源补齐）。
+> 公开 v1.0 之前的规划。v0.2c（多源补齐）**已收尾并在本机全量验证过**（2026-07-10）：Bilibili、YouTube、Podcast、arXiv、**X（bridge-RSS PoC）** 五路 fetcher + 错误重试/速率限制 + 优雅关闭 + Vite setApiKey 修复 + **Apply & Restart Sidecar 按钮**；**Playwright 前端 E2E 已跑绿**（Tauri-shell 层留待 tauri-driver）。
+>
+> **实测结果**（不再是静态计数）：`uv run pytest` **249/249 绿** · `npm test` **28/28 绿** · `cargo test` **17/17 绿**（keystore 8 + llm_config 9）· `cargo check --all-targets` 干净 · `npm run build` 干净 · `npm run test:e2e` **5/5 绿**。跑之前修掉了三个真实缺陷，见下面「收尾验证」小节。
 
 ## 实际状态
 
@@ -18,7 +20,22 @@
     - 详情页：编号 / #标签 / `**重点**` inline-markdown 渲染
   - 测试：114/114 pytest 绿，32/32 vitest 绿，8/8 Rust keystore smoke 绿
   - 收尾 commit: `8acdf43` (inbox) / `1769463` (sync) / `6239674` (FTS5) / `b8f8ee8` (keystore merge)
-- 下一站 **v0.2c**：补齐其他源（YouTube / X / Podcast / arXiv）
+- **v0.2c** ✅ 完成（2026-07-10）：多源补齐 + 错误处理，五路 fetcher 全部落地并在本机实测
+  - **Bilibili fetcher PoC 已合入**：mid/bvid 两种订阅模式 + CC/AI 字幕合并 + 章节切分，`distillers/bilibili_prompt.py` 专属提炼 prompt；前端 SourcesPage/DetailPanel 已能加 Bilibili 源、嵌入播放器（commits: `fbef1ac` fetcher / `f7db3b7` prompt / `9f2bba8` 接线 / `e95dc50` 前端 / 三个 merge commit）
+  - **sidecar 内部拆分**（不在原 roadmap 里，属于顺手的工程债清理）：`app.py` 里的同步 job 编排（并发控制/取消/后台任务）拆到独立的 `pipeline/orchestrator.py`，路由文件从 900+ 行瘦到 500 多行
+  - 种子源从 5 个涨到 8 个（新增 3 个 Bilibili AI 资讯 UP 主）
+  - 测试：pytest **249/249 绿**（实跑，`--collect-only` 逐文件核对过；此前 ROADMAP/README 写的 175、AGENTS/ARCHITECTURE 写的 222 都是静态计数，且互相矛盾），vitest **28/28 绿**（v0.2b 记的 32 一直是错的）
+  - **补做的历史欠账**（这轮全项目复查带出来的，不是新功能）：
+    - `i18n/en.json`/`zh.json` 里的 `_keyIndex` 数组（195 条，没有任何代码引用）终于真删了——之前 ROADMAP 一直写着"v0.2b 已清理"，其实一直没删
+    - `formatRelativeTime()`（"3h ago" 这种相对时间）之前不管 UI 语言都固定输出英文，违反 AGENTS.md 自己定的"所有用户可见字符串都要过 `t()`"规矩；现在接上 `time.*` i18n key，中文界面显示"3 小时前"
+    - `package.json`/`Cargo.toml`/`tauri.conf.json` 的 version 字段（一直是 `0.1.0`，Sidebar 页脚也硬编码 `v0.1.0`）跟 Python sidecar 的 `0.2.0` 对不上——全部统一成 `0.2.0`
+    - **严重 bug**：`pipeline/sync.py` 一直用 `fetcher.fetch(source, lookback_days=...)` 调用 fetcher，但 `RSSFetcher`/`HackerNewsFetcher`（以及 registry 里的 `_NoopFetcher`）的 `fetch()` 签名根本不接受这个参数——生产环境里每次同步 RSS/HN 源都会抛 `TypeError`，被 `run_source_sync` 的 `except Exception` 悄悄吞掉、记成 per-source fetch error。8 个种子源里 7 个（除 Bilibili）都受影响。单测没发现是因为 `test_sync.py` 全用接受 `lookback_days` 的 Fake fetcher，从没有测过真实 fetcher 走管线这条路径。现在补上参数、RSSFetcher 真正按 `lookback_days` 算 cutoff，并加了回归测试（`test_rss_fetcher_accepts_lookback_days_kwarg` / `test_hn_fetcher_accepts_lookback_days_kwarg` / 新增 `test_fetcher_registry.py`）
+    - `distillers/bilibili_prompt.py` 的 `is_bilibili()` 一直检查 `raw.metadata["source_kind"]`，但两个真实 fetcher（`fetchers/rss.py` / `fetchers/bilibili.py`）打的 tag 其实是 `feed_kind`——"preferred" 的 metadata 检测路径从来没生效过，全靠 URL 里的 `bilibili.com` fallback 兜底，功能上没坏但文档撒谎了。改成检查 `feed_kind`，`test_bilibili_prompt.py` 的 fixture 也同步改名，不再验证一个和生产不一致的假设
+    - `src/types/index.ts` 的 `PrismHealth` 缺了 `distillerConfigured` / `dbPath` 两个后端一直在返回的字段——类型声称"跟 models.py 保持同步"，其实一直没有。补齐
+    - 又删了 23 个真死的 i18n key（`actions.*` 整个命名空间、`inbox.bilibiliSource`/`syncing`/`distillProgressIdle`、`settings.apiKeyDialog.*`/`setApiKey`/`clearApiKey`、`sources.addDialog.type.*`）——都是早期重构留下的孤儿翻译，代码里没有任何地方引用（含动态 key 拼接）。en.json/zh.json 从 196 key 降到 173，两个文件仍然逐 key 对齐
+  - **YouTube fetcher + 错误重试/速率限制**（见下面 v0.2c 清单；设计稿在 `docs/design/`）。新增 pytest：`test_retry.py`（重试矩阵/backoff/Retry-After/throttle）、`test_youtube_fetcher.py`（纯函数 + 三模式 + 契约 + prompt 集成）、`test_sync.py` 追加 FetchError 记账/冷却/真实 RSSFetcher 走管线
+  - **Podcast / arXiv fetcher、优雅关闭、Vite setApiKey 修复**（见下面 v0.2c 清单）；Rust 侧 sidecar.rs 的改动已过 `cargo check --all-targets` + `cargo test`
+  - **收尾验证**（2026-07-10，全部在本机实跑，非静态计数）：见下面「v0.2c 收尾验证」小节——三个真实缺陷在这一步才暴露出来
 
 ## v0.1 — Hello Prism ✅
 
@@ -53,7 +70,7 @@
 
 ### v0.2a 已知尾巴（留给 v0.2b / v0.5）
 
-- [x] i18n `_keyIndex` 数组：v0.2a 为兼容 verifier 写的临时数组，5KB 死重量，**v0.2b 已清理**
+- [x] i18n `_keyIndex` 数组：v0.2a 为兼容 verifier 写的临时数组，5KB 死重量——**这里之前写着"v0.2b 已清理"，其实没清理，一直留到 v0.2c 才真的删掉**（en.json/zh.json 各 195 条，没有任何代码引用它，见下面 v0.2c 清单）
 - [x] Vitest 覆盖再加（v0.2b 从 7 case → 32 case，+25）
 - [ ] `setApiKey` 在 Vite 调试下抛错（被 React Query onError 接住，prod 无影响，留到 v0.2c 顺手清）
 
@@ -61,27 +78,60 @@
 
 实际交付的 v0.2b 不再是"多源补齐"（那一坨挪到 v0.2c），而是一轮**先打地基**的迭代：把 v0.2a 留下的密钥痛点干掉、把交互体验补到能用的水位、把全文搜索这个高频需求先做了。
 
-- [x] **密钥体系重写**：Tauri 端用本地 AES-256-GCM keystore（`~/.prism/keystore.json` + 0600 master key）替换 `tauri-plugin-keyring`，根除 macOS 启动期 keychain 授权弹窗；前端永远拿不到 key 值，只能查 `{configured: bool}`；active provider 切换走 `sidecar::restart()` 刷新 env（`b8f8ee8`）
+- [x] **密钥体系重写**：Tauri 端用本地 AES-256-GCM keystore（`~/.prism/keystore.json` + 0600 master key）替换 `tauri-plugin-keyring`，根除 macOS 启动期 keychain 授权弹窗；默认读路径只能查 `{configured: bool}`，明文 key 只在用户主动点"眼睛"按钮时经 `reveal_llm_key` 短暂交给渲染进程；active provider 切换走 `sidecar::restart()` 刷新 env（`b8f8ee8`）
 - [x] **LLM provider 瘦身**：5 个 → 2 个（DeepSeek + MiniMax），i18n / 测试 / 注册表同步精简（`428e47d`）
 - [x] **提炼实时进度**：SSE 流 + 进度条 + 取消按钮 + 取消 toast，蒸馏中改 key 不卡（`51c91a8` / `5a29e1d`）
 - [x] **同步可取消**：sync 异步化 + per-source 边界检查点，长跑可中断（`1769463`）
 - [x] **全文搜索**：SQLite FTS5 索引 + 前端 search 框，~5ms 命中；含 CJK prefix + FTS5 语法 sanitizer（`6239674` / `8acdf43`）
 - [x] **详情页打磨**：编号 / `#标签` / `**重点**` inline-markdown 渲染（`8acdf43`）
-- [x] **i18n 死重量清理**：`_keyIndex` 临时数组移除
 - [x] **Vitest 覆盖扩展**：7 → 32 case（+ 25 个新 case）
 - [x] **测试**：114/114 pytest、32/32 vitest、8/8 Rust keystore smoke
 
-## v0.2c — 多源补齐 + 错误处理（下一站）
+## v0.2c — 多源补齐 + 错误处理（进行中）
 
-- [ ] YouTube fetcher（yt-dlp + 字幕提取）
-- [ ] X fetcher（FxTwitter API 或自托管 scraper，先 PoC 选型）
-- [ ] Podcast fetcher（RSS 变种，加 enclosure / 时长 / 章节字段）
-- [ ] arXiv fetcher（cs.AI / cs.LG / cs.CL，按提交时间排序）
-- [ ] 错误重试 + 速率限制（per-source 配额 + APScheduler backoff）
-- [ ] Tauri：`Apply & Restart Sidecar` 按钮（避免改 key 必重启 app）
-- [ ] Tauri：scheduler 优雅关闭（SIGTERM → 跑完 in-flight 再退）
-- [ ] Vite 调试下 `setApiKey` 抛错修复
-- [ ] Playwright for Tauri E2E（开 Tauri 窗口跑真实交互）
+- [x] **Bilibili fetcher PoC**（mid/bvid 两种模式 + CC/AI 字幕合并 + 章节切分专属 prompt + 前端接入）——原计划里没写这条，是实际先做的
+- [x] **YouTube fetcher**（yt-dlp + 字幕提取；设计稿 `docs/design/youtube-fetcher.md`）：channel/video 两模式对齐 Bilibili 的 mid/bvid；字幕四级优先（人工 zh → 人工任意 → 自动 zh → 自动 en），json3 → 共享 `fetchers/_subtitle.py` 的 `[CC]/[AI]` 行格式；`lookback_days` 真正生效（upload_date 可靠，列表倒序遇过期即停）；`bilibili_prompt` 泛化为按 `feed_kind` 插值平台措辞（B 站输出逐字不变），`should_use_bilibili_prompt` 扩到 `feed_kind in {bilibili, youtube}`；前端 SourcesPage badge/URL 解析 + DetailPanel youtube-nocookie 播放器 + i18n（en/zh 各 +5 key，逐 key 对齐）
+- [x] **错误重试 + 速率限制**（设计稿 `docs/design/retry-and-rate-limit.md`）：
+  - 请求级：`fetchers/_retry.py::retry_async`（429/5xx/超时才重试，jitter ±20%，尊重 Retry-After 封顶 30s）+ `HostThrottle` per-host 最小间隔（bilibili 1.0s / youtube 1.5s / 默认 0.2s）；RSS/HN 的手写重试循环收编
+  - 源级契约翻转：fetcher 从"绝不 raise"改为"整源失败 raise `FetchError`（带 `retryable` + `partial_items`），单条失败跳过"——`sources.last_error` 从此真正工作（旧契约下 fetch 全挂和"今天没新文章"不可区分，`lookback_days` 签名 bug 正是靠这个机制藏了那么久）
+  - 调度级：meta 表存 `fail_streak:{id}` / `retry_after:{id}`，冷却 min(2^n, 24) 小时（non-retryable 直接 24h）；每日 9 点 job 跳过冷却中的源；新增每小时 :30 补跑 job 只挑「失败且过冷却」的源；手动 Sync now 无视冷却；fetch 失败不消耗 first-sync 宽窗口
+  - 顺手删掉死配置 `FETCH_INTER_SOURCE_SLEEP_SEC`（定义于 config.py 但全项目无引用）
+- [x] **Podcast fetcher**（RSS 变种）：继承 `RSSFetcher`（下载/重试/lookback/FetchError 契约全复用，`_entry_to_raw` 钩子是本轮为此抽的），enclosure → `metadata.audio_url`、`itunes:duration` → `duration_sec`（三种时长形态都认）、episode/season 带上；show notes 做蒸馏正文（转写留给未来 whisper 集成）
+- [x] **arXiv fetcher**：新增 `SourceKind.arxiv`（kind 列是 TEXT，无迁移）；export.arxiv.org Atom API，`config_json.categories`（默认 cs.AI/cs.LG/cs.CL）或原生 `query`；submittedDate 倒序 + lookback 截断；throttle 对 arxiv.org 设 3s 间隔（API 条款）；非法 categories 是 `FetchError(retryable=False)` config 错误；前端 kind 下拉 + URL 框兼作分类输入（逗号分隔）
+- [x] **顺手**：`blog` kind 从 noop 改为路由到 `RSSFetcher`（blog 源本来就是一条 RSS feed）
+- [x] **X fetcher（bridge-RSS PoC）**：选型结论——X 没有免费/稳定/无鉴权的 timeline 接口（FxTwitter 只服务单条推文、无 timeline；无鉴权抓取太脆弱），所以 PoC 走 **bridge-RSS**：X 源指向自托管 RSSHub `/twitter/user/:handle` 或 Nitter RSS，`XFetcher` 继承 `RSSFetcher`（跟 Podcast 一个套路），只做 X 专属三件事——handle/URL 归一化（`@handle`/`x.com/handle`/直接 feed URL）、tweet id+handle+RT/回复元数据（`feed_kind="x"`/`content_type=post`）、短文本专属 distill prompt（`distillers/base.py` 里按 `feed_kind=="x"` 分支，避免长文模板把一条推文注水）；`resolve_feed_url` 对缺 bridge 的配置报 `FetchError(retryable=False)`；registry 接入 `SourceKind.x`，前端 SourcesPage kind 下拉/badge/URL 解析（`feed_url`）+ i18n（en/zh 各 +2）。新增测试 `test_x_fetcher.py`（14 case：handle 解析矩阵/feed-url 解析/status 解析/元数据富化/RT 分类/lookback+错误契约/prompt 路由）+ registry `test_x_source_gets_x_fetcher`。**纯解析逻辑已在沙箱跑过验证；httpx/respx 相关的 fetch 流程待本机 pytest**。FxTwitter 之后可作单推富化层叠加
+- [x] **Tauri：`Apply & Restart Sidecar` 按钮**：新增 `sidecar::restart_sidecar` command（后台 fire-and-forget kill+respawn，复用既有 `restart()`），lib.rs 注册；`api.ts::restartSidecar`（Tauri 内 invoke，浏览器 dev no-op + warn）；SettingsPage Sidecar 卡片加按钮 + `useMutation`（成功后等 1.5s 再 invalidate health 反映新进程）+ 错误提示；i18n en/zh 各 +4。**Rust 侧本机需 `cargo check`（沙箱无 cargo）**
+- [x] **scheduler / sidecar 优雅关闭**：Python 侧 lifespan shutdown 顺序改为 stop scheduler → `orchestrator.drain_inflight()`（给所有 in-flight job 打 cancel 标记，等它们在 per-source 检查点停下并落盘部分进度，宽限 `PRISM_SHUTDOWN_GRACE_SEC`=4s）→ close_db；Tauri 侧 `kill_existing_child` 在 SIGTERM 后轮询 `try_wait` 最多 5s（刻意大于 Python 的 4s）才硬杀，空闲时 sidecar 秒退不拖慢退出。注意：「跑完当前源再停」就是设计目标——等一次完整 distill run（可能几分钟）不现实
+- [x] **Vite 调试下 `setApiKey` 抛错修复**：根因是浏览器 dev 路径把 `apiKey` 原样 POST 给 sidecar，而 sidecar 设计上 400 拒收（key 不过 HTTP）——`api.ts` 注释声称"不发 key"但代码发了。修复：非 Tauri 路径剥掉 `apiKey` + console.warn 说明 key 只能在 Tauri 壳里存；`reveal_llm_key` 的裸 `invoke` 也补了 `isTauri()` 守卫
+- [~] **Playwright E2E（前端层已跑绿，Tauri-shell 层留待 tauri-driver）**：`playwright.config.ts` + `e2e/`（`mock-sidecar.ts` 把 sidecar HTTP 契约全 mock 掉，hermetic、无需 Python/无需 key）+ `test:e2e` script + `@playwright/test` devDep + README。`smoke.spec.ts` **5/5 绿**（本机实跑）：inbox 渲染 / manual sync toast / add-source 建 X 源 / settings 版本+restart 按钮 / **中文 UI 下渲染 `titleZh`**（收尾时新增，见下）。**重要 scope 说明**：Playwright 挂不上 Tauri 的原生 webview（WKWebView/WebView2 无 CDP），所以这层只跑浏览器里的 React UI（`isTauri()=false` 走 HTTP fallback），keystore/`invoke`/`restart_sidecar` 这些壳内路径**没覆盖**。真正的壳级 E2E（真 invoke、AES keystore、sidecar spawn）需要 `tauri-driver` + WebdriverIO——列为后续
+- [x] **顺手做的工程债**：`app.py`（900+ 行）里的同步 job 编排逻辑拆到 `pipeline/orchestrator.py`，路由文件瘦身；`AGENTS.md`/`README.md`/`docs/ARCHITECTURE.md` 里过期的测试数字、目录树、provider 数量、种子源数量一并同步
+- [x] **i18n `_keyIndex` 真正删除**（195 条死数组，ROADMAP 之前误报"已清理"）+ `formatRelativeTime` 接入 `t()`，不再固定输出英文
+- [x] **version 字段统一**：`package.json`/`Cargo.toml`/`tauri.conf.json`/Sidebar 页脚从 `0.1.0` 对齐到 Python sidecar 已经在用的 `0.2.0`
+
+### v0.2c 收尾验证（2026-07-10）
+
+之前所有 v0.2c 的实现都是在**没有 PyPI / npm registry / cargo** 的沙箱里写的，测试数字全靠静态数 `def test_`。这轮在本机第一次真跑，暴露了三个静态计数永远发现不了的缺陷：
+
+1. **`tests/test_retry.py::test_jitter_bounds` 挂了**——不是实现的锅，是测试的锅。`10.0 * (0.8 + 0.4 * 1.0)` 在二进制浮点下等于 `12.000000000000002`，严格的 `<= 12.0` 上界必然失败。改成按 `pytest.approx(8.0 + 4.0 * j)` 比较，同时把两个端点都钉死
+2. **`cargo test` 从 v0.2b 起就一直是红的**——`0e10250` 给 `LlmConfigResponse` 加了 `key_last4` / `key_length` 两个字段，但 `tests/llm_config_smoke.rs` 里的结构体字面量没同步，整个 test target 编译不过。ROADMAP 之前写的"8/8 Rust keystore smoke 绿"只覆盖了 `keystore_smoke.rs`，`llm_config_smoke.rs` 压根没编译过。补上字段，并**顺手给这两个字段加了 camelCase 断言**——它们正是 SettingsPage 渲染定长掩码要读的 `keyLast4`/`keyLength`，和 `baseUrl` 一样是会被 `rename_all` 回归打穿的双词字段
+3. **`npm test` 挂了**——vitest 的默认 include glob（`**/*.spec.ts`）把 `e2e/smoke.spec.ts` 当成单测收走了，它 `import "@playwright/test"` 直接炸在 import 阶段。`vitest.config.ts` 加 `exclude: [...configDefaults.exclude, "e2e/**"]`
+
+另外 Playwright 的 `inbox` case 一跑就挂：它断言中文标题 `一个新的开源大模型发布`，但 `detectInitialLanguage()` 走的是 `localStorage > navigator.language > en`，而 Chromium 默认 locale 是 `en-US`——UI 其实渲染的是 `titleEn`。**这是测试的假设错了，不是 app 的 bug**。修法：`playwright.config.ts` 显式钉 `locale: "en-US"`（否则结果依赖跑测试的机器 locale），`inbox` case 改断言英文标题，另外**新增一个 `test.use({ locale: "zh-CN" })` 的 case 真正覆盖 `titleZh` 路径**——双语标题选择器是核心功能，之前反而没有测到。
+
+**真实端到端验证**（隔离的 `PRISM_DATA_DIR`，没碰用户的 `~/.prism/data.db`；无 API key 所以 distill 跳过）：
+
+- sidecar 起得来，`/health` 返回 `distillerConfigured` + `dbPath`——**印证了 `PrismHealth` TS 类型补的那两个字段确实存在**
+- 真跑 `POST /api/sync/src_simon` 打真实 RSS：**30 条新 item，`error: null`，`last_error: None`**。这条路径正是 `lookback_days` 签名 bug 的案发现场（旧代码必抛 `TypeError`）——单测用的是 Fake fetcher，只有真跑才算数
+- 真跑新的 **arXiv fetcher** 打 `export.arxiv.org`：**50 条 item，无错**
+- 建一个没配 bridge 的 **X 源**验证错误契约：`last_error` 落到了一条**可操作的配置错误**文案；`_meta` 表里 `fail_streak=1`、`retry_after` 正好是 **+24h**（non-retryable → 24h，符合设计）；而 `first_sync_done` **只对成功的源写入**，失败的 X 源没写——印证了"fetch 失败不消耗 first-sync 宽窗口"
+- **优雅关闭**：空闲时 SIGTERM **0.23s** 退出；在 10 源全量 sync 跑到一半时 SIGTERM，**3.87s 内 drain 完退出**（Python 宽限 4.0s < Tauri SIGKILL 5.0s，实测顺序成立），日志有 `job ... cancelled` + `all in-flight sync work drained cleanly`，DB 里那条 job **`status=cancelled` / `items_new=113` / `sources_done=1/10` / `finished_at` 已写**——部分进度确实落盘了，没有留下永远 `running` 的孤儿 job
+
+**仍未覆盖**（诚实记账，别再让文档撒谎）：
+
+- **Tauri 壳内路径**：`invoke`、AES keystore、sidecar spawn、`restart_sidecar` 按钮的真实点击。`cargo test` 只覆盖到 Rust 单元层；`restart_sidecar` 已确认注册进 `invoke_handler`、`api.ts` 也有 `isTauri()` 守卫，但**没有在真 app 里点过**。需要 `tauri-driver` + WebdriverIO
+- **真实 distill**：全程没有 API key，`itemsDistilled` 一直是 0，LLM 提炼链路没有端到端跑过
+- **Bilibili / YouTube / Podcast fetcher 的真实网络抓取**：只有单测覆盖（Bilibili 在 drain 测试里被 SIGTERM 打断了）
+- `GET /api/sync/{job_id}` 在**运行中**返回 `sourcesTotal=0`：`create_job` 建行时不写 `sources_total`，只在 `finish_job` 落盘，但 `_background_pipeline` 的 docstring 声称"updating the job row as we go"。前端只读**终态** job 的 `sourcesTotal`（取消 toast），所以**用户看不到**，属于 API 契约的潜在瑕疵，没在这轮动它
 
 ## v0.3 — Agent 接口
 
