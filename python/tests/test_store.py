@@ -161,6 +161,25 @@ async def test_sync_jobs_crud(initialized):
 
 
 @pytest.mark.asyncio
+async def test_create_job_persists_sources_total_while_running(initialized):
+    """A client polling GET /api/sync/{job_id} mid-run must see the real
+    total, not 0/0. `sources_total` used to be written only by `finish_job`,
+    so the running-state row lied until the job ended."""
+    job_id = await store.create_job(None, sources_total=8)
+    job = await store.get_job(job_id)
+    assert job.status.value == "running"
+    assert job.sources_total == 8
+
+    # update_job_progress must not clobber the total back to 0.
+    await store.update_job_progress(
+        job_id, items_new=1, items_distilled=0, sources_done=1,
+    )
+    job = await store.get_job(job_id)
+    assert job.sources_total == 8
+    assert job.sources_done == 1
+
+
+@pytest.mark.asyncio
 async def test_sync_log_history(initialized):
     await store.write_sync_log(
         source_id="src_x", job_id="job_x",

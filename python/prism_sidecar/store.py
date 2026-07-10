@@ -539,16 +539,23 @@ async def update_item_status(item_id: str, status: ItemStatus) -> Optional[Knowl
 
 # ----- Sync jobs / history ------------------------------------------------
 
-async def create_job(source_id: Optional[str]) -> str:
-    """Create a sync_jobs row and return the job_id."""
+async def create_job(source_id: Optional[str], *, sources_total: int = 0) -> str:
+    """Create a sync_jobs row and return the job_id.
+
+    ``sources_total`` is written at creation time so a client polling
+    GET /api/sync/{job_id} mid-run sees "done/total" instead of "0/0".
+    Every caller knows its source list before creating the job; the
+    column used to be written only by `finish_job`, which made the
+    running-state response lie until the job ended.
+    """
     db = get_db()
     job_id = _new_id("job")
     await db.execute(
         """
-        INSERT INTO sync_jobs (job_id, source_id, status, started_at)
-        VALUES (?, ?, 'running', ?)
+        INSERT INTO sync_jobs (job_id, source_id, status, started_at, sources_total)
+        VALUES (?, ?, 'running', ?, ?)
         """,
-        (job_id, source_id, datetime.now(timezone.utc).isoformat()),
+        (job_id, source_id, datetime.now(timezone.utc).isoformat(), sources_total),
     )
     await db.commit()
     return job_id

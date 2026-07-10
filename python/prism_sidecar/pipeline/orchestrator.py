@@ -316,11 +316,11 @@ async def start_sync(source_id: Optional[str] = None) -> SyncResult:
             if not source:
                 raise HTTPException(404, f"source {source_id} not found")
             source_ids = [source_id]
-            job_id = await store.create_job(source_id)
+            job_id = await store.create_job(source_id, sources_total=1)
         else:
             all_sources = await store.list_sources()
             source_ids = [s.id for s in all_sources if s.enabled]
-            job_id = await store.create_job(None)
+            job_id = await store.create_job(None, sources_total=len(source_ids))
 
         inflight_jobs.add(job_id)
         started_at = datetime.now(timezone.utc)
@@ -428,7 +428,7 @@ async def run_all_sync_background() -> None:
             if not source_ids:
                 log.info("[scheduler] no enabled sources; nothing to do")
                 return
-            job_id = await store.create_job(None)
+            job_id = await store.create_job(None, sources_total=len(source_ids))
             inflight_jobs.add(job_id)
         # Pipeline runs without the lock held.
         try:
@@ -467,7 +467,7 @@ async def run_failed_retry_background() -> None:
                     due_ids.append(s.id)
             if not due_ids:
                 return
-            job_id = await store.create_job(None)
+            job_id = await store.create_job(None, sources_total=len(due_ids))
             inflight_jobs.add(job_id)
         try:
             log.info(
