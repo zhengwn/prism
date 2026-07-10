@@ -129,6 +129,8 @@ fn llm_config_response_serialises_camel_case() {
     let resp = secrets::LlmConfigResponse {
         provider: "minimax".to_string(),
         configured: true,
+        key_last4: Some("cdef".to_string()),
+        key_length: Some(32),
         model: Some("MiniMax-M3".to_string()),
         base_url: Some("https://api.minimaxi.com/v1".to_string()),
     };
@@ -140,6 +142,17 @@ fn llm_config_response_serialises_camel_case() {
     assert!(
         !json.contains("\"base_url\""),
         "snake_case base_url leaked into IPC payload: {json}"
+    );
+    // SettingsPage renders the length-matched key mask from `keyLast4` +
+    // `keyLength`. Both are two-word fields, so they break the same way
+    // `baseUrl` would if the rename attribute is ever dropped.
+    assert!(
+        json.contains("\"keyLast4\"") && json.contains("\"keyLength\""),
+        "expected camelCase keyLast4/keyLength, got {json}"
+    );
+    assert!(
+        !json.contains("\"key_last4\"") && !json.contains("\"key_length\""),
+        "snake_case key_last4/key_length leaked into IPC payload: {json}"
     );
     // `provider`, `configured`, `model` are already single-word — they
     // should serialise as-is. Guard against any future global rename.
