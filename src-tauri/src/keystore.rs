@@ -283,17 +283,26 @@ fn read_file(root: &Path) -> Result<KeystoreFile, String> {
 }
 
 /// Encrypt + write the keystore file atomically (write to `.tmp`,
-/// fsync, rename). On Unix also enforces 0600 on the final file.
+/// fsync, rename). On Unix the tmp file is *created* with 0600 (not
+/// chmod'd after the fact) so there's no window where it briefly
+/// exists under the process's default umask-derived permissions —
+/// same pattern as `load_or_create_master_key` below, which this used
+/// to be inconsistent with (open-then-chmod here vs. open-with-mode
+/// there).
 fn write_file(root: &Path, file: &KeystoreFile) -> Result<(), String> {
     let final_path = root.join(DATA_FILENAME);
     let tmp_path = root.join(format!("{DATA_FILENAME}.tmp"));
     let json = serde_json::to_string_pretty(file)
         .map_err(|e| format!("serialize keystore: {e}"))?;
     {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
+        let mut opts = OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts
             .open(&tmp_path)
             .map_err(|e| format!("open {}: {e}", tmp_path.display()))?;
         f.write_all(json.as_bytes())
@@ -301,6 +310,9 @@ fn write_file(root: &Path, file: &KeystoreFile) -> Result<(), String> {
         f.flush().map_err(|e| format!("flush {}: {e}", tmp_path.display()))?;
         let _ = f.sync_all();
     }
+    // Belt-and-suspenders: `.mode(0o600)` at open time is subject to
+    // the process umask on some platforms, so re-assert the exact bits
+    // here too (cheap, and matches the original behaviour on Unix).
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

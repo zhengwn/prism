@@ -40,6 +40,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Sidecar info / lifecycle
             sidecar::get_sidecar_url,
+            sidecar::restart_sidecar,
             // Legacy v0.2a single-provider API (back-compat)
             secrets::get_api_key_status,
             secrets::set_api_key,

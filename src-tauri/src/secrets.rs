@@ -8,6 +8,16 @@
  * so the rest of the Tauri shell — and the frontend's IPC contract — is
  * unchanged.
  *
+ * Verified-dead note (v0.2c review): as of this writing, the frontend's
+ * only `invoke()` calls are `get_llm_config`, `set_llm_config`, and
+ * `reveal_llm_key` (grep `src/` for `invoke(` to confirm). `get_api_key_status`,
+ * `set_api_key`, `clear_api_key`, and `get_provider_schema` are registered
+ * in `lib.rs`'s `invoke_handler!` and still compile/work, but nothing in
+ * the current React app calls them — they're inert back-compat surface,
+ * not an active fallback path. Don't trust doc comments below (including
+ * ones in this file) that describe them as "what the Settings page uses";
+ * re-grep the frontend before relying on that.
+ *
  * # v0.2a → v0.2a-providers layout (unchanged contract)
  *
  * | Slot                | Type            | Purpose                          |
@@ -33,9 +43,14 @@
  *
  * # SECURITY
  *
- * - The key value is **never** returned to the frontend. Only `configured: bool`
- *   crosses the JS↔Rust bridge on the read direction. A compromised renderer
- *   cannot exfiltrate keys.
+ * - The *default* read path (`get_api_key_status`, `get_llm_config`) never
+ *   returns the key value — only `configured: bool` (+ `key_last4` /
+ *   `key_length`) crosses the JS↔Rust bridge. The one deliberate
+ *   exception is `reveal_llm_key`, called only when the user explicitly
+ *   clicks the Settings page's "show key" eye toggle; see its own
+ *   SECURITY doc comment below for the threat-model argument. Anything
+ *   that describes this boundary as "the frontend can never get the
+ *   key" is describing the default path only, not `reveal_llm_key`.
  * - The keystore file lives at `~/.prism/keystore.json` with permission
  *   0600 (Unix). The trust model is a single-user desktop app — anyone
  *   with read access to the user's home directory can read the file.
@@ -281,9 +296,14 @@ pub fn write_active_provider<R: Runtime>(
 }
 
 // ---------------------------------------------------------------------------
-// v0.2a backward-compat thin wrappers. The frontend still invokes these from
-// the v0.2a Settings page. They route through the new multi-slot helpers so
-// the keychain layout is consistent regardless of which API the UI uses.
+// v0.2a backward-compat thin wrappers. The v0.2a Settings page used to
+// invoke the `get_api_key_status` / `set_api_key` / `clear_api_key` Tauri
+// commands built on these; the current Settings page does not (it only
+// calls `get_llm_config` / `set_llm_config` / `reveal_llm_key` — see the
+// module doc comment's "Verified-dead note"). Kept for back-compat in case
+// something still links against them; route through the new multi-slot
+// helpers so the keychain layout stays consistent regardless of which API
+// a caller uses.
 // ---------------------------------------------------------------------------
 
 /// Read the DeepSeek API key. Equivalent to `read_llm_key(app, "deepseek")`.
@@ -308,11 +328,12 @@ pub fn delete_deepseek_key<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), 
 // ---------------------------------------------------------------------------
 // Tauri commands (frontend invokes these via `invoke()`).
 //
-// SECURITY: We deliberately do NOT return the key value to the webview — only
-// a `configured: bool` flag. The frontend's job is to display "API key set"
-// or "no API key", and to accept the user's paste. The actual key never
-// crosses the JS↔Rust bridge in the read direction, so a compromised
-// renderer (XSS in a future feed item, say) can't exfiltrate it.
+// SECURITY: the commands in this block deliberately do NOT return the key
+// value to the webview — only a `configured: bool` flag (+ `key_last4` /
+// `key_length` further down). The frontend's job is to display "API key
+// set" or "no API key", and to accept the user's paste. `reveal_llm_key`
+// (below) is the sole, opt-in exception to this rule — see its own doc
+// comment.
 // ---------------------------------------------------------------------------
 
 /// Returns `{ "configured": <bool> }`. No key value is ever returned.
@@ -410,8 +431,15 @@ pub fn get_llm_config(app: tauri::AppHandle) -> LlmConfigResponse {
 
 /// Return the provider schema. This is the static contract — the Python
 /// sidecar has its own copy in `GET /api/settings/providers` and the two
-/// should stay in sync. We hard-code it here so the Settings UI can render
-/// the picker even before the sidecar is up.
+/// should stay in sync. The intent was for the Settings UI to render the
+/// picker from this command before the sidecar is up; in the current
+/// frontend, `SettingsPage.tsx` unconditionally calls
+/// `api.listProviders()` (the sidecar HTTP endpoint) instead and has no
+/// fallback to this command, so that "renders before the sidecar is up"
+/// behavior does not currently exist — the picker just won't have data
+/// until the sidecar responds. This command is otherwise unused; kept
+/// as a hard-coded reference copy and in case a future revision wires
+/// the fallback up for real.
 #[tauri::command]
 pub fn get_provider_schema() -> Vec<ProviderSchema> {
     vec![

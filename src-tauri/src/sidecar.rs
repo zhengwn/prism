@@ -47,6 +47,14 @@ pub const ACTIVE_PROVIDER_FILENAME: &str = "active_provider.json";
 /// restart it on provider change.
 pub struct SidecarState(pub Mutex<Option<std::process::Child>>);
 
+/// Serialises the whole kill→spawn→store sequence. `set_llm_config`
+/// fires restarts as background tasks; without this lock two rapid
+/// "save" clicks could interleave (A kills, B kills, A spawns+stores,
+/// B spawns and OVERWRITES the stored child) leaking a process that
+/// stays bound to port 8765. The per-field `SidecarState` mutex only
+/// protects the handle slot, not the multi-step sequence.
+static RESTART_LOCK: Mutex<()> = Mutex::new(());
+
 #[derive(Serialize)]
 pub struct SidecarInfo {
     pub url: String,
@@ -84,13 +92,17 @@ fn write_active_provider_marker(provider: &str, model: Option<&str>) {
         return;
     }
     let path = dir.join(ACTIVE_PROVIDER_FILENAME);
+    let tmp_path = dir.join(format!("{ACTIVE_PROVIDER_FILENAME}.tmp"));
     let mut payload = serde_json::json!({ "provider": provider });
     if let Some(m) = model {
         payload["model"] = serde_json::Value::String(m.to_string());
     }
+    // tmp + rename so the sidecar (which reads this file on its own
+    // startup, possibly concurrently) never sees a half-written JSON.
     match serde_json::to_string_pretty(&payload)
         .map_err(|e| e.to_string())
-        .and_then(|s| std::fs::write(&path, s).map_err(|e| e.to_string()))
+        .and_then(|s| std::fs::write(&tmp_path, s).map_err(|e| e.to_string()))
+        .and_then(|()| std::fs::rename(&tmp_path, &path).map_err(|e| e.to_string()))
     {
         Ok(()) => eprintln!("[prism] wrote active provider marker: {} (provider={})", path.display(), provider),
         Err(e) => eprintln!("[prism] failed to write active provider marker {path:?}: {e}"),
@@ -191,7 +203,17 @@ fn resolve_provider<R: Runtime>(app: &AppHandle<R>) -> String {
 /// it first so the new env takes effect. The state is stored in Tauri's
 /// app-state map under `SidecarState`; the caller is expected to have
 /// `manage()`d an empty `SidecarState` once at startup.
+///
+/// Public entry point — takes `RESTART_LOCK` so concurrent spawn /
+/// restart / shutdown calls can't interleave their kill→spawn→store
+/// sequences.
 pub fn spawn<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let _g = RESTART_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    spawn_inner(app)
+}
+
+/// The actual spawn sequence. Caller must hold `RESTART_LOCK`.
+fn spawn_inner<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let provider = resolve_provider(app);
 
     // Build the command (may fail if keychain lookups go sideways — but those
@@ -256,6 +278,73 @@ pub fn spawn<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Best-effort kill of a process **tree** rooted at `pid`.
+///
+/// Why this exists: the child we spawn and hold in `SidecarState` is
+/// `uv`, not the Python interpreter — `build_command` runs
+/// `uv run --directory ../python prism-sidecar`. `uv` forks the actual
+/// `prism-sidecar` (uvicorn) process as its own child. Plain
+/// `Child::kill()` (SIGKILL to `uv`'s pid / `TerminateProcess` on
+/// Windows) only guarantees `uv` itself dies — whether the grandchild
+/// Python process goes down with it depends on `uv` forwarding the
+/// signal, which we shouldn't rely on. Left alone, that Python process
+/// keeps the loopback port (8765) bound, so the next `spawn()` (e.g.
+/// after a provider change) can fail to bind or — worse — the old and
+/// new sidecar both answer requests.
+///
+/// We kill the tree first (so the grandchild dies even if `uv` would
+/// have ignored the signal), then still call `Child::kill()` on the
+/// direct child as the existing, already-tested fallback. Both steps
+/// are best-effort: a failure here is logged, never fatal — worst case
+/// is the pre-existing (already-documented) orphan-process behaviour,
+/// not a regression.
+fn kill_process_tree(pid: u32, context: &str) {
+    #[cfg(unix)]
+    {
+        // `pkill -P <pid>` signals *children* of pid (i.e. the Python
+        // process `uv run` forked), not pid itself — `Child::kill()`
+        // below still handles `uv`. `-TERM` first gives uvicorn a
+        // chance to close its listening socket cleanly; callers that
+        // need a hard stop still get the SIGKILL from `Child::kill()`.
+        match std::process::Command::new("pkill")
+            .args(["-TERM", "-P", &pid.to_string()])
+            .status()
+        {
+            Ok(status) if status.success() => {
+                eprintln!("[prism] killed sidecar child processes of pid={pid} ({context})");
+            }
+            // Exit code 1 just means "no matching processes" — not an
+            // error, just means there was nothing to clean up.
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!(
+                    "[prism] pkill -P {pid} failed ({context}): {e} \
+                     (pkill may not be installed; falling back to killing {pid} only)"
+                );
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        // `/T` kills the whole process tree rooted at pid, `/F` forces
+        // it. This is the Windows equivalent of the pkill call above —
+        // TerminateProcess (what `Child::kill()` uses) does not cascade
+        // to descendants on its own.
+        match std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .status()
+        {
+            Ok(status) if status.success() => {
+                eprintln!("[prism] killed sidecar process tree pid={pid} ({context})");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("[prism] taskkill /PID {pid} failed ({context}): {e}");
+            }
+        }
+    }
+}
+
 /// Helper: take the existing child out of the state, kill + wait for it.
 /// Used by both `restart()` and `spawn()` (when re-spawning in place).
 fn kill_existing_child<R: Runtime>(app: &AppHandle<R>, context: &str) {
@@ -271,6 +360,47 @@ fn kill_existing_child<R: Runtime>(app: &AppHandle<R>, context: &str) {
         }
     };
     if let Some(mut child) = guard.take() {
+        // Step 1: SIGTERM the tree (the real Python process `uv`
+        // forked) — see `kill_process_tree` doc comment. uvicorn turns
+        // SIGTERM into a graceful shutdown: the sidecar's lifespan
+        // hook drains in-flight sync jobs at their per-source
+        // checkpoint (python `orchestrator.drain_inflight`, grace 4s)
+        // and closes the db cleanly.
+        kill_process_tree(child.id(), context);
+
+        // Step 2 (v0.2c): give the graceful path a bounded window
+        // before the hard kill. 5s deliberately outlives the Python
+        // side's 4s drain grace; a sidecar with nothing in flight
+        // exits well under a second, so the common case stays snappy —
+        // we poll `try_wait` instead of sleeping the whole window.
+        const GRACE_MS: u64 = 5_000;
+        const POLL_MS: u64 = 100;
+        let mut waited = 0u64;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    eprintln!(
+                        "[prism] sidecar exited gracefully ({context}, {status}, {waited}ms)"
+                    );
+                    return;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    eprintln!("[prism] sidecar try_wait failed ({context}): {e}");
+                    break;
+                }
+            }
+            if waited >= GRACE_MS {
+                eprintln!(
+                    "[prism] sidecar still running after {GRACE_MS}ms grace ({context}); hard-killing"
+                );
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
+            waited += POLL_MS;
+        }
+
+        // Step 3: hard fallback — same behaviour as before v0.2c.
         match child.kill() {
             Ok(()) => eprintln!("[prism] sidecar killed ({context})"),
             Err(e) => eprintln!("[prism] sidecar kill failed ({context}): {e}"),
@@ -285,16 +415,36 @@ fn kill_existing_child<R: Runtime>(app: &AppHandle<R>, context: &str) {
 /// env vars. Blocks for the duration of the kill+wait+respawn (~2 s).
 pub fn restart<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     eprintln!("[prism] restarting sidecar (provider change)");
+    let _g = RESTART_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     kill_existing_child(app, "restart");
-    spawn(app)
+    spawn_inner(app)
+}
+
+/// Tauri command: manually restart the sidecar.
+///
+/// Exposed to the Settings page so the user can pick up a newly-saved API
+/// key (or a manually-edited `~/.prism/keystore.json`) without quitting
+/// and relaunching the whole app. Like `set_llm_config`, the actual
+/// kill+respawn runs on a background thread so the UI stays responsive;
+/// the frontend polls `health()` and watches the version/uptime reset to
+/// know the new process is live.
+#[tauri::command]
+pub fn restart_sidecar(app: tauri::AppHandle) {
+    let app_for_restart = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(e) = restart(&app_for_restart) {
+            eprintln!("[prism] manual sidecar restart failed: {e}");
+        }
+    });
 }
 
 /// Best-effort shutdown for the sidecar child process.
 ///
-/// v0.2a: we just `kill()` — the Python process exits and APScheduler's loop
-/// is torn down by the OS. v0.2b will send a SIGTERM first (or hit a
-/// `/shutdown` HTTP endpoint) and give the scheduler a moment to drain.
+/// v0.2c: SIGTERM first, then up to 5s grace for the Python side to
+/// drain in-flight sync jobs (per-source checkpoint) and close the db,
+/// then hard kill as the fallback — see `kill_existing_child`.
 pub fn shutdown<R: Runtime>(app: &AppHandle<R>) {
+    let _g = RESTART_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     kill_existing_child(app, "shutdown");
 }
 
