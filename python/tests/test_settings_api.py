@@ -292,3 +292,35 @@ def test_get_llm_status_shape(tmp_path, monkeypatch):
     assert status.provider == "minimax"
     assert status.model == "M3"
     assert status.base_url == "https://x/v1"
+
+
+# ---- resolve_base_url -----------------------------------------------------
+#
+# The startup banner used to print `active_provider.json`'s `base_url`
+# verbatim, so an env override (which Tauri injects at spawn) showed up as
+# `base_url=None` even though the distiller was honouring it. These pin the
+# precedence: marker file > env > provider default.
+
+
+def test_resolve_base_url_prefers_marker_over_env(monkeypatch):
+    monkeypatch.setenv("MINIMAX_API_BASE", "https://env-host/v1")
+    assert (
+        settings_mod.resolve_base_url("minimax", "https://marker-host/v1")
+        == "https://marker-host/v1"
+    )
+
+
+def test_resolve_base_url_falls_back_to_env(monkeypatch):
+    monkeypatch.setenv("MINIMAX_API_BASE", "https://env-host/v1")
+    assert settings_mod.resolve_base_url("minimax", None) == "https://env-host/v1"
+
+
+def test_resolve_base_url_none_when_nothing_set(monkeypatch):
+    monkeypatch.delenv("MINIMAX_API_BASE", raising=False)
+    assert settings_mod.resolve_base_url("minimax", None) is None
+
+
+def test_resolve_base_url_ignores_env_for_provider_without_override(monkeypatch):
+    # deepseek has no base-url env var; MINIMAX_API_BASE must not leak into it.
+    monkeypatch.setenv("MINIMAX_API_BASE", "https://env-host/v1")
+    assert settings_mod.resolve_base_url("deepseek", None) is None

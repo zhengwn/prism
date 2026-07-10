@@ -104,7 +104,10 @@ async def lifespan(app: FastAPI):
     active = settings.write_default_if_missing()
     log.info(
         "[prism-sidecar] active LLM provider: %s (model=%s, base_url=%s)",
-        active["provider"], active.get("model"), active.get("base_url"),
+        active["provider"],
+        active.get("model"),
+        settings.resolve_base_url(active["provider"], active.get("base_url"))
+        or "<provider default>",
     )
     log.info(
         "[prism-sidecar] distiller: %s",

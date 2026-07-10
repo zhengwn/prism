@@ -148,6 +148,27 @@ _PROVIDER_ENV_KEY: dict[str, Optional[str]] = {
     "minimax": "MINIMAX_API_KEY",
 }
 
+# Env var that overrides a provider's API base. Only MiniMax supports one
+# today (Tauri injects MINIMAX_API_BASE at spawn); absent = provider default.
+_PROVIDER_ENV_BASE_URL: dict[str, str] = {
+    "minimax": "MINIMAX_API_BASE",
+}
+
+
+def resolve_base_url(provider: str, marker_base_url: Optional[str] = None) -> Optional[str]:
+    """The api_base a distiller will actually use, or None for its default.
+
+    Mirrors the precedence in `distillers/minimax.py`: explicit (the
+    active-provider marker file) > env > the distiller's own default. This
+    exists so the startup banner reports the *effective* value instead of
+    just echoing the marker file, which made an env override look like it
+    had been ignored.
+    """
+    if marker_base_url:
+        return marker_base_url
+    env_name = _PROVIDER_ENV_BASE_URL.get(provider)
+    return os.environ.get(env_name) if env_name else None
+
 
 # ----- Read / write -------------------------------------------------------
 
