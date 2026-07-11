@@ -33,6 +33,7 @@ packages = ["prism_sidecar"]
 [dependency-groups]
 dev = [
     "asgi-lifespan>=2.1.0",
+    "pyinstaller>=6.21.0",
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "respx>=0.21",
