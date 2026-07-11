@@ -119,6 +119,32 @@ class SourcePatch(_CamelBase):
     config_json: Optional[dict[str, Any]] = None
 
 
+class Webhook(_CamelBase):
+    """A registered webhook (v0.3). The sidecar POSTs matching new items to
+    ``url`` after a sync; ``secret`` signs the payload (HMAC-SHA256).
+
+    Filters: deliver an item when ``source_id`` is None or equals the item's
+    source, AND ``tag`` is None or is a member of the item's ``tags_zh``.
+    """
+
+    id: str
+    url: str
+    secret: str
+    source_id: Optional[str] = None
+    tag: Optional[str] = None
+    enabled: bool = True
+    fail_streak: int = 0
+    last_status: Optional[str] = None
+    last_delivered_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+
+class WebhookCreate(_CamelBase):
+    url: str
+    source_id: Optional[str] = None
+    tag: Optional[str] = None
+
+
 # ----- Item ----------------------------------------------------------------
 
 class KnowledgeItem(_CamelBase):

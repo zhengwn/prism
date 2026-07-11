@@ -201,6 +201,116 @@ async def test_list_sources_item_count(initialized):
     assert "lastSyncedAt" in by_id[src_a.id]
 
 
+# ---- prism_subscribe (write) ---------------------------------------------
+
+
+async def test_subscribe_creates_rss_source(initialized):
+    out = await mcp_server.prism_subscribe(
+        name="My Blog", kind="rss", url="https://example.com/feed.xml"
+    )
+    assert out["kind"] == "rss"
+    assert out["name"] == "My Blog"
+    assert out["enabled"] is True
+    assert out["itemCount"] == 0
+    # It's really in the DB.
+    listed = await mcp_server.prism_list_sources()
+    assert any(s["id"] == out["id"] for s in listed["sources"])
+
+
+async def test_subscribe_unknown_kind_raises(initialized):
+    with pytest.raises(ToolError, match="Unknown kind"):
+        await mcp_server.prism_subscribe(name="x", kind="telepathy", url="u")
+
+
+async def test_subscribe_x_without_bridge_raises(initialized):
+    # resolve_feed_url rejects an @handle with no bridge — surfaced early.
+    with pytest.raises(ToolError, match="bridge"):
+        await mcp_server.prism_subscribe(name="Simon", kind="x", url="@simonw")
+
+
+async def test_subscribe_arxiv_bad_categories_raises(initialized):
+    with pytest.raises(ToolError, match="categor"):
+        await mcp_server.prism_subscribe(
+            name="arxiv", kind="arxiv", url="", config={"categories": ["not-a-cat!!"]}
+        )
+
+
+async def test_subscribe_youtube_video_ok(initialized):
+    out = await mcp_server.prism_subscribe(
+        name="YT", kind="youtube", url="", config={"video": "jNQXAC9IVRw"}
+    )
+    assert out["kind"] == "youtube"
+    assert out["configJson"]["video"] == "jNQXAC9IVRw"
+
+
+async def test_subscribe_bilibili_without_ref_raises(initialized):
+    with pytest.raises(ToolError, match="mid|bvid"):
+        await mcp_server.prism_subscribe(name="B", kind="bilibili", url="", config={})
+
+
+# ---- prism_set_source_enabled (write) ------------------------------------
+
+
+async def test_set_source_enabled_toggles(initialized):
+    created = await mcp_server.prism_subscribe(
+        name="Toggle", kind="rss", url="https://e/feed"
+    )
+    off = await mcp_server.prism_set_source_enabled(created["id"], enabled=False)
+    assert off["enabled"] is False
+    on = await mcp_server.prism_set_source_enabled(created["id"], enabled=True)
+    assert on["enabled"] is True
+
+
+async def test_set_source_enabled_missing_raises(initialized):
+    with pytest.raises(ToolError, match="src_nope"):
+        await mcp_server.prism_set_source_enabled("src_nope", enabled=False)
+
+
+# ---- webhook tools (write) -----------------------------------------------
+
+
+# Public IP literal — avoids DNS entirely, so the SSRF guard's getaddrinfo is
+# deterministic regardless of the test host's resolver. (Real hostnames can
+# resolve to private ranges in sandboxed CI, which the guard correctly blocks.)
+_PUBLIC_URL = "https://93.184.216.34/hook"
+
+
+async def test_register_webhook_returns_secret_once(initialized):
+    out = await mcp_server.prism_register_webhook(url=_PUBLIC_URL)
+    assert out["url"] == _PUBLIC_URL
+    assert out["enabled"] is True
+    # Full secret revealed at registration.
+    assert out["secret"] and not out["secret"].startswith("…")
+    # But listing masks it.
+    listed = await mcp_server.prism_list_webhooks()
+    assert listed["count"] == 1
+    assert listed["webhooks"][0]["secret"].startswith("…")
+
+
+async def test_register_webhook_localhost_rejected(initialized):
+    with pytest.raises(ToolError, match="non-public|loopback|resolve"):
+        await mcp_server.prism_register_webhook(url="http://localhost:9000/hook")
+
+
+async def test_register_webhook_metadata_ip_rejected(initialized):
+    # 169.254.169.254 = cloud metadata (link-local) — must be blocked.
+    with pytest.raises(ToolError, match="non-public|link-local"):
+        await mcp_server.prism_register_webhook(url="http://169.254.169.254/latest/meta-data")
+
+
+async def test_register_webhook_bad_source_filter_raises(initialized):
+    with pytest.raises(ToolError, match="src_nope"):
+        await mcp_server.prism_register_webhook(url=_PUBLIC_URL, source_id="src_nope")
+
+
+async def test_set_webhook_enabled_toggle_and_missing(initialized):
+    created = await mcp_server.prism_register_webhook(url=_PUBLIC_URL)
+    off = await mcp_server.prism_set_webhook_enabled(created["id"], enabled=False)
+    assert off["enabled"] is False
+    with pytest.raises(ToolError, match="wh_nope"):
+        await mcp_server.prism_set_webhook_enabled("wh_nope", enabled=True)
+
+
 # ---- wire-level integration ----------------------------------------------
 
 
@@ -222,10 +332,24 @@ async def test_stdio_wire_fresh_db(isolated_data_dir):
         assert names == [
             "prism_get_item",
             "prism_list_sources",
+            "prism_list_webhooks",
             "prism_recent_items",
+            "prism_register_webhook",
             "prism_search",
+            "prism_set_source_enabled",
+            "prism_set_webhook_enabled",
+            "prism_subscribe",
         ]
         assert all(t.description for t in tools.tools)
+        # Read tools flag readOnlyHint; write tools must not.
+        hints = {t.name: (t.annotations.readOnlyHint if t.annotations else None)
+                 for t in tools.tools}
+        assert hints["prism_search"] is True
+        assert hints["prism_list_webhooks"] is True
+        assert hints["prism_subscribe"] is False
+        assert hints["prism_set_source_enabled"] is False
+        assert hints["prism_register_webhook"] is False
+        assert hints["prism_set_webhook_enabled"] is False
 
         result = await client.call_tool("prism_list_sources", {})
         assert result.isError is False

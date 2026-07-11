@@ -81,6 +81,15 @@ INITIAL_FETCH_LOOKBACK_DAYS: int = int(
 )
 
 
+# ----- Webhooks (v0.3) ----------------------------------------------------
+
+# Per-delivery HTTP timeout when POSTing to a registered webhook.
+WEBHOOK_TIMEOUT_SEC: float = float(os.environ.get("PRISM_WEBHOOK_TIMEOUT_SEC", "10"))
+
+# Consecutive failed deliveries before a webhook auto-disables itself.
+WEBHOOK_MAX_FAILS: int = int(os.environ.get("PRISM_WEBHOOK_MAX_FAILS", "10"))
+
+
 def is_distiller_configured() -> bool:
     """True if the DeepSeek distiller has an API key to work with."""
     return DEEPSEEK_API_KEY is not None and len(DEEPSEEK_API_KEY) > 0

@@ -241,6 +241,7 @@ async def run_source_sync(source: Source, distiller: Distiller | None = None) ->
 
     stats.fetched = len(raw_items)
 
+    new_item_ids: list[str] = []
     for raw in raw_items:
         try:
             existing = await item_exists_by_url(raw.url)
@@ -249,6 +250,7 @@ async def run_source_sync(source: Source, distiller: Distiller | None = None) ->
 
             item_id = await insert_item_from_raw(source, raw)
             stats.new_items += 1
+            new_item_ids.append(item_id)
 
             if distiller is not None:
                 # Per-item progress signal so the inbox progress bar
@@ -318,6 +320,15 @@ async def run_source_sync(source: Source, distiller: Distiller | None = None) ->
     await mark_source_synced(source.id, now_iso, last_error=stats.error)
     await _mark_first_sync_done(source)
     await record_sync_success(source.id)
+
+    # v0.3: fan the new items out to any registered webhooks. Best-effort —
+    # dispatch_for_items never raises, and it's a no-op (one cheap query)
+    # when no webhooks are registered. Imported lazily to keep the sync
+    # module's import graph free of httpx at load time.
+    if new_item_ids:
+        from prism_sidecar import webhooks
+
+        await webhooks.dispatch_for_items(new_item_ids)
 
     log.info(
         "[sync] %s: fetched=%d new=%d distilled=%d failed_distill=%d lookback=%dd",

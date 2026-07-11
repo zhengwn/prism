@@ -191,3 +191,72 @@ async def test_sync_log_history(initialized):
     assert len(history) == 1
     assert history[0].items_new == 2
     assert history[0].items_distilled == 1
+
+
+# ---- webhooks (v0.3) ------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_webhook_crud(initialized):
+    wh = await store.create_webhook(
+        url="https://93.184.216.34/hook", secret="s3cr3t",
+        source_id="src_x", tag="开源",
+    )
+    assert wh.id.startswith("wh_")
+    assert wh.enabled is True
+    assert wh.fail_streak == 0
+
+    got = await store.get_webhook(wh.id)
+    assert got is not None
+    assert got.url == "https://93.184.216.34/hook"
+    assert got.source_id == "src_x"
+    assert got.tag == "开源"
+
+    all_hooks = await store.list_webhooks()
+    assert len(all_hooks) == 1
+    assert (await store.list_enabled_webhooks())[0].id == wh.id
+
+    off = await store.set_webhook_enabled(wh.id, False)
+    assert off.enabled is False
+    assert await store.list_enabled_webhooks() == []
+    assert await store.set_webhook_enabled("wh_missing", True) is None
+
+
+@pytest.mark.asyncio
+async def test_webhook_delivery_bookkeeping(initialized):
+    wh = await store.create_webhook(url="https://93.184.216.34/h", secret="k")
+    # A failure bumps the streak but keeps it enabled below the cap.
+    await store.record_webhook_delivery(wh.id, ok=False, status="error: boom", max_fails=3)
+    got = await store.get_webhook(wh.id)
+    assert got.fail_streak == 1
+    assert got.enabled is True
+    assert got.last_status == "error: boom"
+
+    # A success resets the streak.
+    await store.record_webhook_delivery(wh.id, ok=True, status="HTTP 200", max_fails=3)
+    got = await store.get_webhook(wh.id)
+    assert got.fail_streak == 0
+    assert got.last_status == "HTTP 200"
+    assert got.last_delivered_at is not None
+
+
+@pytest.mark.asyncio
+async def test_webhook_auto_disables_at_max_fails(initialized):
+    wh = await store.create_webhook(url="https://93.184.216.34/h", secret="k")
+    for _ in range(3):
+        await store.record_webhook_delivery(wh.id, ok=False, status="HTTP 500", max_fails=3)
+    got = await store.get_webhook(wh.id)
+    assert got.fail_streak == 3
+    assert got.enabled is False  # auto-disabled at the cap
+
+
+@pytest.mark.asyncio
+async def test_schema_version_is_v4_with_webhooks_table(initialized):
+    from prism_sidecar.db import get_db
+    db = get_db()
+    cur = await db.execute("SELECT value FROM _meta WHERE key = 'schema_version'")
+    assert (await cur.fetchone())[0] == "4"
+    cur = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='webhooks'"
+    )
+    assert await cur.fetchone() is not None

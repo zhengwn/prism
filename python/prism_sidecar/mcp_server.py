@@ -1,17 +1,22 @@
-"""Prism read-only MCP server (stdio).
+"""Prism MCP server (stdio).
 
 Exposes the local Prism knowledge base (``$PRISM_DATA_DIR/data.db``,
 default ``~/.prism/data.db``) to MCP clients — Claude Code / Cursor /
 OpenCode and friends. The Prism app does NOT need to be running: this
 process opens the SQLite database itself.
 
-Read-only by construction: only query tools are registered, and nothing
-in this module writes to the DB. Note the guarantee lives at the *tool*
-layer, not the connection layer — we reuse the sidecar's ``init_db()``
-(idempotent, runs migrations) so the FTS index is always present and the
-query code in ``store.py`` is shared verbatim instead of duplicated.
-WAL journal mode makes the cross-process one-writer/N-readers pattern
-safe while the app is syncing.
+Mostly read; the few write tools (prism_subscribe, prism_set_source_enabled,
+prism_register_webhook, prism_set_webhook_enabled) are explicit and carry
+``readOnlyHint=False``. There is deliberately NO delete/unsubscribe tool —
+deleting a source cascade-deletes all its items, which is too destructive
+for a one-shot agent call; disable a source or webhook instead. We reuse the
+sidecar's ``init_db()`` (idempotent, runs migrations, so the FTS index is
+always present) and the ``store.py`` read/write functions verbatim rather
+than duplicating query logic. Writes go straight to SQLite — ``POST
+/api/sources`` is a pure pass-through over ``store.create_source`` and needs
+the app running, so direct writes lose nothing and keep the "app need not
+run" property. WAL + ``busy_timeout`` make the cross-process pattern safe
+while the app is syncing.
 
 Run: ``uv run prism-mcp`` (or ``prism-mcp`` once installed).
 
@@ -34,10 +39,11 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from prism_sidecar import __version__, config, store
+from prism_sidecar import __version__, config, store, webhooks
 from prism_sidecar.db import close_db, init_db
+from prism_sidecar.fetchers.base import FetchError
 from prism_sidecar.fts5 import sanitize_fts5_query
-from prism_sidecar.models import KnowledgeItem
+from prism_sidecar.models import KnowledgeItem, Source, SourceKind
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +51,7 @@ log = logging.getLogger(__name__)
 MAX_LIMIT = 200
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True)
+_READ_WRITE = ToolAnnotations(readOnlyHint=False)
 
 # Mirrors models.ItemStatus. A Literal (not the enum) so the values land
 # verbatim in the tool's JSON schema and bad input fails validation
@@ -231,6 +238,210 @@ async def prism_list_sources() -> dict[str, Any]:
         "count": len(sources),
         "sources": [s.model_dump(by_alias=True, mode="json") for s in sources],
     }
+
+
+# ---- write tools ----------------------------------------------------------
+
+# Kinds whose config validity can only be known at fetch time. We run the
+# fetcher's OWN validator against a transient Source so a bad config is
+# rejected at subscribe time (a clear ToolError) instead of silently
+# becoming a source that fails at the next sync. `POST /api/sources` does
+# NOT do this — it's a value-add of the tool.
+_SUBSCRIBE_KINDS = "rss / blog / podcast / arxiv / x / youtube / bilibili"
+
+
+def _validate_source_config(kind: SourceKind, url: str, config: dict[str, Any]) -> None:
+    """Raise ToolError if a source of this kind/url/config can't be fetched.
+
+    Reuses the per-kind validators the fetchers already expose so the error
+    message the agent sees is the same one it would eventually hit at sync.
+    """
+    probe = Source(id="preview", name="preview", kind=kind, url=url, config_json=config)
+    try:
+        if kind == SourceKind.arxiv:
+            from prism_sidecar.fetchers.arxiv import parse_categories
+
+            parse_categories(probe)  # None (defaults) or raises FetchError
+        elif kind == SourceKind.x:
+            from prism_sidecar.fetchers.x import resolve_feed_url
+
+            resolve_feed_url(probe)
+        elif kind == SourceKind.youtube:
+            from prism_sidecar.fetchers.youtube import parse_channel_ref, parse_video_ref
+
+            channel = config.get("channel")
+            video = config.get("video")
+            if config.get("playlist"):
+                raise FetchError("playlist-mode YouTube sources are not implemented yet", retryable=False)
+            if channel:
+                if not parse_channel_ref(str(channel)):
+                    raise FetchError(f"unrecognized channel ref: {channel!r}", retryable=False)
+            elif video:
+                if not parse_video_ref(str(video)):
+                    raise FetchError(f"unrecognized video ref: {video!r}", retryable=False)
+            else:
+                raise FetchError(
+                    "youtube needs config {\"channel\": ...} or {\"video\": ...}",
+                    retryable=False,
+                )
+        elif kind == SourceKind.bilibili:
+            if not (config.get("mid") or config.get("bvid")):
+                raise FetchError(
+                    "bilibili needs config {\"mid\": ...} (UP 主) or {\"bvid\": ...} (单视频)",
+                    retryable=False,
+                )
+        else:
+            # rss / blog / podcast: an RSS-family feed just needs a URL.
+            if not (url or "").strip():
+                raise FetchError(f"{kind.value} source needs a feed url", retryable=False)
+    except FetchError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@mcp.tool(annotations=_READ_WRITE)
+async def prism_subscribe(
+    name: Annotated[str, Field(description="Human-readable source name shown in Prism.")],
+    kind: Annotated[
+        str,
+        Field(description=(
+            "Source kind, one of: " + _SUBSCRIBE_KINDS + ". "
+            "'blog' and 'podcast' are RSS variants."
+        )),
+    ],
+    url: Annotated[
+        str,
+        Field(description=(
+            "Feed URL for rss/blog/podcast. For x, an @handle or profile URL "
+            "(needs config.bridge) or a direct feed URL. Ignored for "
+            "arxiv/youtube/bilibili (they use `config`); pass \"\" then."
+        )),
+    ] = "",
+    config: Annotated[
+        Optional[dict[str, Any]],
+        Field(description=(
+            "Per-kind config. arxiv: {\"categories\": [\"cs.AI\", ...]}. "
+            "x: {\"bridge\": \"https://rsshub.example.com\"} or {\"feed_url\": ...}. "
+            "youtube: {\"channel\": \"@handle|UC…|url\"} or {\"video\": \"id|url\"}. "
+            "bilibili: {\"mid\": \"…\"} or {\"bvid\": \"BV…\"}. Omit for rss/blog/podcast."
+        )),
+    ] = None,
+) -> dict[str, Any]:
+    """Subscribe Prism to a new content source.
+
+    The source is created but NOT fetched immediately — Prism fetches it on
+    its next sync (the daily 9am job, or when the user hits "Sync now" in the
+    app). Config is validated up front: a bad kind or unusable config is
+    rejected here rather than silently failing later. Returns the created
+    source (id, kind, url, enabled, itemCount=0). Use prism_list_sources to
+    see existing sources first so you don't create a duplicate.
+    """
+    try:
+        source_kind = SourceKind(kind)
+    except ValueError:
+        raise ToolError(
+            f"Unknown kind {kind!r}. Must be one of: {_SUBSCRIBE_KINDS}."
+        )
+    cfg = config or {}
+    _validate_source_config(source_kind, url, cfg)
+    source = await store.create_source(
+        name=name, kind=source_kind.value, url=url, enabled=True, config_json=cfg
+    )
+    return source.model_dump(by_alias=True, mode="json")
+
+
+@mcp.tool(annotations=_READ_WRITE)
+async def prism_set_source_enabled(
+    source_id: Annotated[str, Field(description="Source id from prism_list_sources.")],
+    enabled: Annotated[bool, Field(description="True to resume syncing, False to pause it.")],
+) -> dict[str, Any]:
+    """Enable or disable a source (reversible pause; not a delete).
+
+    A disabled source is skipped by every sync until re-enabled; its already
+    fetched items stay. There is no delete tool — disabling is the safe,
+    reversible way to stop a source.
+    """
+    updated = await store.patch_source(source_id, enabled=enabled)
+    if updated is None:
+        raise ToolError(
+            f"No source with id {source_id!r}. Ids come from prism_list_sources."
+        )
+    return updated.model_dump(by_alias=True, mode="json")
+
+
+# ---- webhook tools --------------------------------------------------------
+
+
+def _webhook_public(webhook: Any, *, reveal_secret: bool = False) -> dict[str, Any]:
+    """Serialize a webhook for a tool response. The signing secret is only
+    returned in full at registration; listings show the last 4 chars."""
+    data = webhook.model_dump(by_alias=True, mode="json")
+    if not reveal_secret:
+        secret = data.get("secret") or ""
+        data["secret"] = f"…{secret[-4:]}" if secret else None
+    return data
+
+
+@mcp.tool(annotations=_READ_WRITE)
+async def prism_register_webhook(
+    url: Annotated[str, Field(description=(
+        "Public https URL to POST new items to. Must resolve to a public "
+        "address — loopback / private / link-local hosts are rejected."
+    ))],
+    source_id: Annotated[Optional[str], Field(description=(
+        "Only deliver items from this source id (from prism_list_sources). "
+        "Omit to match all sources."
+    ))] = None,
+    tag: Annotated[Optional[str], Field(description=(
+        "Only deliver items carrying this Chinese tag (matches an item's "
+        "tagsZh). Omit to match any tag."
+    ))] = None,
+) -> dict[str, Any]:
+    """Register a webhook that receives new Prism items after each sync.
+
+    When a sync produces new items matching the (optional) source_id and tag
+    filters, Prism POSTs them to `url` as JSON, signed with HMAC-SHA256 in the
+    `X-Prism-Signature: sha256=<hmac>` header. **The signing secret is
+    returned only once, now** — store it to verify deliveries. A webhook that
+    fails to deliver repeatedly auto-disables. There is no delete tool; use
+    prism_set_webhook_enabled to pause one.
+    """
+    try:
+        webhooks.assert_safe_webhook_url(url)
+    except webhooks.UnsafeWebhookURL as exc:
+        raise ToolError(str(exc)) from exc
+    if source_id is not None and await store.get_source(source_id) is None:
+        raise ToolError(
+            f"No source with id {source_id!r}. Ids come from prism_list_sources."
+        )
+    created = await store.create_webhook(
+        url=url, secret=webhooks.generate_secret(), source_id=source_id, tag=tag
+    )
+    return _webhook_public(created, reveal_secret=True)
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def prism_list_webhooks() -> dict[str, Any]:
+    """List registered webhooks (signing secrets shown as last-4 only).
+
+    Returns id, url, filters (sourceId / tag), enabled, failStreak and
+    lastStatus so you can see which webhooks are healthy.
+    """
+    hooks = await store.list_webhooks()
+    return {"count": len(hooks), "webhooks": [_webhook_public(h) for h in hooks]}
+
+
+@mcp.tool(annotations=_READ_WRITE)
+async def prism_set_webhook_enabled(
+    webhook_id: Annotated[str, Field(description="Webhook id from prism_list_webhooks.")],
+    enabled: Annotated[bool, Field(description="True to resume deliveries, False to pause.")],
+) -> dict[str, Any]:
+    """Enable or disable a webhook (reversible pause; not a delete)."""
+    updated = await store.set_webhook_enabled(webhook_id, enabled)
+    if updated is None:
+        raise ToolError(
+            f"No webhook with id {webhook_id!r}. Ids come from prism_list_webhooks."
+        )
+    return _webhook_public(updated)
 
 
 def main() -> None:

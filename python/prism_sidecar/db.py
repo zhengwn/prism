@@ -37,7 +37,7 @@ PRISM_DATA_DIR = _config.PRISM_DATA_DIR
 #     per-char segmentation + phrase queries fixes Chinese substring
 #     search. Index maintenance for INSERT/UPDATE moves into store.py
 #     (SQL triggers can't segment); only the DELETE trigger remains.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 SCHEMA_SQL = """
@@ -111,6 +111,23 @@ CREATE TABLE IF NOT EXISTS _meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- v4 (v0.3): webhook registrations. External agents register a callback URL
+-- (via the MCP prism_register_webhook tool); the sidecar POSTs matching new
+-- items to it after a sync. Pure additive table — no rebuild migration.
+CREATE TABLE IF NOT EXISTS webhooks (
+    id TEXT PRIMARY KEY,
+    url TEXT NOT NULL,
+    secret TEXT NOT NULL,
+    source_id TEXT,
+    tag TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    fail_streak INTEGER NOT NULL DEFAULT 0,
+    last_status TEXT,
+    last_delivered_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_webhooks_enabled ON webhooks(enabled);
 """
 
 
@@ -246,6 +263,11 @@ async def init_db(db_path: Path | None = None) -> aiosqlite.Connection:
     # CASCADE works for items.
     await db.execute("PRAGMA foreign_keys = ON")
     await db.execute("PRAGMA journal_mode = WAL")
+    # WAL allows one writer at a time. Without a busy timeout a concurrent
+    # write (e.g. the read/write MCP process registering a source while the
+    # sidecar is mid-sync) raises SQLITE_BUSY immediately instead of waiting.
+    # Wait up to 5s for the lock before giving up.
+    await db.execute("PRAGMA busy_timeout = 5000")
 
     await _run_migrations(db)
 
