@@ -13,6 +13,8 @@
     "tauri:dev": "tauri dev",
     "dev:clean": "lsof -ti:1420,8765 | xargs kill -9 2>/dev/null; npm run tauri:dev",
     "tauri:build": "tauri build",
+    "freeze-sidecar": "bash scripts/build-sidecar-bin.sh",
+    "package:mac": "npm run freeze-sidecar && tauri build",
     "sidecar:dev": "cd python && uv run prism-sidecar",
     "sidecar:install": "cd python && uv sync",
     "smoke": "bash scripts/smoke.sh",

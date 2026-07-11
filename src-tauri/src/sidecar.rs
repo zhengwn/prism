@@ -2,7 +2,10 @@
  * Python sidecar management.
  *
  * Lifecycle:
- *   - On Tauri startup, spawn `uv run prism-sidecar` from the python/ dir.
+ *   - On Tauri startup, spawn the sidecar. In a packaged app this is the
+ *     frozen, self-contained binary bundled beside the app (Tauri
+ *     `externalBin`); in a dev tree it falls back to `uv run prism-sidecar`
+ *     from python/. See `resolve_bundled_sidecar`.
  *   - Read the active LLM provider from the OS keychain.
  *   - Inject the appropriate API key (and base URL for MiniMax) into
  *     the child process's environment.
@@ -112,23 +115,49 @@ fn write_active_provider_marker(provider: &str, model: Option<&str>) {
 /// Build the `Command` for spawning the sidecar, with the correct working
 /// directory + env injection for the given provider. The caller still owns
 /// spawn/kill/wait.
+/// Locate the frozen, self-contained sidecar binary bundled next to the app
+/// (Tauri's `externalBin` places it beside the main executable, named plainly
+/// `prism-sidecar` with the target-triple stripped). Returns None in a dev
+/// tree where no frozen binary exists, so the caller falls back to `uv run`.
+///
+/// `PRISM_SIDECAR_BIN` overrides the lookup — handy for exercising the
+/// production spawn path from a dev build.
+fn resolve_bundled_sidecar() -> Option<PathBuf> {
+    if let Ok(explicit) = std::env::var("PRISM_SIDECAR_BIN") {
+        let p = PathBuf::from(explicit);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let name = if cfg!(windows) { "prism-sidecar.exe" } else { "prism-sidecar" };
+    let bin = std::env::current_exe().ok()?.parent()?.join(name);
+    bin.exists().then_some(bin)
+}
+
 fn build_command<R: Runtime>(
     app: &AppHandle<R>,
     provider: &str,
 ) -> Result<Command, String> {
-    // Resolve python/ path relative to the Tauri working dir.
-    // In dev (cargo tauri dev) cwd is src-tauri/, so python/ is at ../python.
-    let python_dir = std::env::current_dir()
-        .map(|p| p.join("..").join("python"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("../python"));
-
-    let mut cmd = Command::new("uv");
-    cmd.args([
-        "run",
-        "--directory",
-        python_dir.to_str().unwrap_or("../python"),
-        "prism-sidecar",
-    ]);
+    // Prod: spawn the frozen binary bundled beside the app (no uv/Python
+    // needed). Dev: fall back to `uv run prism-sidecar` from ../python
+    // (in `cargo tauri dev` the cwd is src-tauri/, so python/ is at ../python).
+    let mut cmd = if let Some(bin) = resolve_bundled_sidecar() {
+        eprintln!("[prism] spawning bundled sidecar: {}", bin.display());
+        Command::new(bin)
+    } else {
+        let python_dir = std::env::current_dir()
+            .map(|p| p.join("..").join("python"))
+            .unwrap_or_else(|_| std::path::PathBuf::from("../python"));
+        eprintln!("[prism] no bundled sidecar found — falling back to `uv run` (dev)");
+        let mut c = Command::new("uv");
+        c.args([
+            "run",
+            "--directory",
+            python_dir.to_str().unwrap_or("../python"),
+            "prism-sidecar",
+        ]);
+        c
+    };
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.stdin(Stdio::null());
