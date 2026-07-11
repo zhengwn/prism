@@ -18,7 +18,8 @@
   only when dev is not running cleanly; do not run it while a healthy dev
   session is up.
 - **Run sidecar only (no Tauri):** `npm run sidecar:dev` — useful for debugging the Python layer
-- **Build:** `npm run tauri:build` (bundles Tauri + frontend; sidecar bundling is a v0.4 task)
+- **Build (dev, no sidecar):** `npm run tauri:build` (bundles Tauri + frontend only)
+- **Package (macOS, self-contained):** `npm run package:mac` — freezes the sidecar with PyInstaller (`scripts/build-sidecar-bin.sh`) into `src-tauri/binaries/prism-sidecar-<triple>`, then `tauri build` bundles it as an `externalBin` so end users need no uv/Python. Produces an **unsigned** arm64 `.app` + `.dmg` (v0.4; Windows / signing / universal / auto-update still TODO — see ROADMAP)
 - **Frontend typecheck:** `npx tsc -b`
 - **Frontend production build:** `npx vite build`
 - **Rust check:** `cd src-tauri && cargo check`
@@ -105,8 +106,10 @@ seems to need Rust and isn't one of the three jobs above, stop and
 ask the user first.
 
 Known cost of this choice: distribution requires bundling a Python
-runtime with the sidecar (python-build-standalone / PyInstaller) —
-tracked as the v0.4 packaging task in `docs/ROADMAP.md`.
+runtime with the sidecar. Handled in v0.4 via PyInstaller
+(`scripts/build-sidecar-bin.sh` → a self-contained binary spawned by
+`sidecar.rs`'s prod branch). macOS packaging (unsigned, arm64) is done;
+Windows / signing / universal / auto-update remain — see `docs/ROADMAP.md`.
 
 ## Code style
 

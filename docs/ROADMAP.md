@@ -163,12 +163,33 @@
 - [x] **Skill bundle**：`skills/prism-knowledge-base/SKILL.md`——教 Agent 用 prism_* 工具的判断力(discover→search→drill in + manage + notify、每种 kind 的 subscribe config 形状、webhook 一次性 secret 流程、何时确认写操作),description 写到不点名 Prism 也能触发。**SKILL.md 本身就是可移植的 Agent Skills 开放标准**(Anthropic 起草),frontmatter 加了 `version`/`agents` 标注适配的 runtime
 - [x] **OpenCode 接入**：`skills/prism-knowledge-base/opencode.jsonc`——`mcp.prism`(type=local,`uv … run prism-mcp`)注册同一个 stdio server + `instructions:["…/SKILL.md"]` 复用同一份指引(同文件,不同外壳)。**Mavis 及其它遵循 Agent Skills 标准的 runtime 直接读 SKILL.md,无需单独 manifest**——查证后确认没有独立的 "Mavis skill 格式",`.mavis/` 是构建规划工具而非 skill runtime;每个 runtime 只需按自己的方式注册 `prism-mcp`(Claude Code `claude mcp add` / OpenCode `opencode.jsonc`)
 
-## v0.4 — 跨平台打包
+## v0.4 — 跨平台打包（进行中）
 
-- [ ] Windows 打包（MSI / NSIS）
-- [ ] macOS 打包（DMG / universal binary）
-- [ ] Python sidecar 打包（PyInstaller / pyoxidizer）
-- [ ] 自动更新（tauri-plugin-updater）
+- [x] **Python sidecar 打包（PyInstaller）**（2026-07-11）：`scripts/build-sidecar-bin.sh`
+  用 PyInstaller `--onefile` 把 sidecar 冻成自包含二进制(~77MB,内含解释器 + 全部依赖),
+  终端用户不再需要 uv/Python。惰性导入 + 带数据文件的重依赖靠 `--collect-all`
+  litellm/yt_dlp/bilibili_api/uvicorn,动态 `uvicorn.run("…app:app")` 靠
+  `--collect-submodules prism_sidecar` 兜住。**冻结验证抓到一个真 bug**:litellm 经
+  tiktoken 数 token,tiktoken 的编码(cl100k_base)走 `tiktoken_ext` 命名空间包 + entry
+  point 发现,PyInstaller 静态分析漏掉 → 真实 distill 才 500;补
+  `--collect-all tiktoken` + `--hidden-import tiktoken_ext[.openai_public]` +
+  `--copy-metadata tiktoken` 修好。冻结二进制在 `env -i`(无 venv)下实测:health + 真实
+  RSS 30 条 + 真实 MiniMax distill 2/2
+- [x] **macOS 打包（DMG，未签名，arm64）**（2026-07-11）：`tauri.conf.json` 加
+  `externalBin: ["binaries/prism-sidecar"]`,`sidecar.rs::build_command` 加
+  dev/prod 分支(`resolve_bundled_sidecar()`:`PRISM_SIDECAR_BIN` env 或 `current_exe()`
+  旁边的 `prism-sidecar`,找不到回落 `uv run`——env 注入/tree-kill 全不动)。
+  `npm run package:mac`(冻结 + `tauri build`)出 `Prism.app` + `Prism_0.2.0_aarch64.dmg`
+  (80MB),冻结 sidecar 落在 `Contents/MacOS/prism-sidecar`
+- [ ] **universal binary**：native wheel(uvloop/httptools/pydantic-core/aiosqlite)分架构,
+  PyInstaller 出不了 universal2;需 CI 分别 arm64/x86_64 冻结再 `lipo` 合并。当前只出 arm64
+- [ ] **代码签名 / 公证**：无 Apple Developer ID($99/年)/ Windows 证书 → 当前包**未签名**。
+  macOS 用户首次打开需右键→打开或 `xattr -dr com.apple.quarantine Prism.app`(见 README)
+- [ ] **Windows 打包（MSI / NSIS）**：需 Windows 机或 GitHub Actions(仓库当前无 CI)。
+  `externalBin` + `resolve_bundled_sidecar` 的 `.exe` 分支已就绪,只差在 Windows 上跑冻结 + 打包
+- [ ] **MCP server 打包**：`prism-mcp` 本切片未冻结(agent/power-user 路径);后续可加第二个
+  externalBin 或给冻结二进制加子命令
+- [ ] **自动更新（tauri-plugin-updater）**：需托管 release 端点 + 更新签名密钥对
 
 ## v0.5 — UX 完善
 

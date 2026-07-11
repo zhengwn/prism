@@ -9,7 +9,7 @@ Prism 是一个 **AI 资讯聚合 + 知识提炼** 桌面应用，把分散在 R
 
 ---
 
-## 当前状态：v0.3 已完成，下一步 v0.4 打包
+## 当前状态：v0.4 进行中（macOS 打包已落地）
 
 **v0.2b 已交付**（2026-06-10）：v0.2a 之后的一轮基础设施重构 + UX 打磨——
 
@@ -97,6 +97,30 @@ claude mcp add prism -- uv --directory /path/to/prism/python run prism-mcp
 
 想让 Agent 用好这些工具，附带一个 **Claude Code Skill**（`skills/prism-knowledge-base/`）——`cp -r skills/prism-knowledge-base ~/.claude/skills/` 即可，教 Agent 何时用哪个工具、怎么用中文总结。
 
+### 打包成桌面 App（macOS，v0.4）
+
+把 Python sidecar 冻成自包含二进制打进 Tauri 包，终端用户**不需要 uv/Python**：
+
+```bash
+npm run package:mac
+# → src-tauri/target/release/bundle/dmg/Prism_0.2.0_aarch64.dmg  (~80MB)
+#   src-tauri/target/release/bundle/macos/Prism.app
+```
+
+`package:mac` = `scripts/build-sidecar-bin.sh`（PyInstaller 冻结 sidecar，~77MB，
+含解释器 + 全部依赖）+ `tauri build`（把二进制作为 `externalBin` 打进 `.app`）。冻结
+慢（几分钟），首次跑请耐心。
+
+**当前包未签名**（还没有 Apple Developer ID）。你自己本地构建的 `.app` 不带 quarantine，
+直接双击能开；**分发给别人**时对方首次打开会被 Gatekeeper 拦，需右键→打开，或：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Prism.app
+```
+
+已知限制（见 [`docs/ROADMAP.md`](./docs/ROADMAP.md) v0.4）：仅 arm64（非 universal）、未签名、
+Windows 打包 / 自动更新待做。
+
 ---
 
 ## 项目结构
@@ -163,7 +187,7 @@ prism/
 - [x] **v0.2b** — 基础设施重构 + UX 打磨（本地 keystore / 2 provider / 实时进度 / 可取消 / FTS5 / 详情 markdown）
 - [x] **v0.2c** — 多源补齐 + 错误处理：七路 fetcher（RSS/HN/Bilibili/YouTube/Podcast/arXiv/X）+ 重试/限速/冷却 + 优雅关闭 + Playwright E2E，全部本机实测
 - [x] **v0.3** — Agent 接口：MCP server（stdio 九工具，含 subscribe/webhook 写）+ Webhook 推送（HMAC + SSRF）+ Skill bundle（Agent Skills 开放标准 + OpenCode 接入）
-- [ ] **v0.4** — 跨平台打包（Windows MSI / macOS DMG / sidecar 打包）
+- [ ] **v0.4**（进行中）— 跨平台打包：macOS DMG + PyInstaller 冻结 sidecar 已落地（未签名、arm64）；Windows / 签名公证 / universal / 自动更新待做
 - [ ] **v0.5** — UX 完善（标签 / ⌘K / 通知）
 - [ ] **v1.0** — 公开发布
 
