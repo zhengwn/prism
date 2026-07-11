@@ -1,6 +1,6 @@
 # Prism — Architecture
 
-> 截至 v0.2c 完成（2026-07-10，本机全量验证）：v0.2a + v0.2b 基础设施重构 + UX 打磨之后完成多源补齐——RSS / HN / Bilibili / YouTube / Podcast / arXiv / X（bridge-RSS PoC）七路 fetcher + 错误重试与速率限制 + 优雅关闭。v0.3 之后会加 MCP server、sqlite-vec 语义搜索、Skill bundle 等。
+> 截至 v0.3 进行中（2026-07-11）：v0.2c 完成多源补齐——RSS / HN / Bilibili / YouTube / Podcast / arXiv / X（bridge-RSS PoC）七路 fetcher + 错误重试与速率限制 + 优雅关闭；v0.3 已落地 **MCP server**（`prism-mcp`，读 4 + 写 2 + webhook 3 工具）+ **Webhook 推送** + **Claude Code Skill bundle**。之后会加 sqlite-vec 语义搜索、跨平台打包等。
 
 ## 总览
 
@@ -51,8 +51,8 @@
                               │  ~/.prism/data.db        │
                               │  - sources               │
                               │  - items (bilingual)     │
-                              │  - sync_log              │
-                              │  - sync_jobs             │
+                              │  - sync_log / sync_jobs  │
+                              │  - webhooks (v0.3)       │
                               │  (sqlite-vec 留 v0.5)    │
                               └──────────────────────────┘
 ```
@@ -112,13 +112,34 @@
 - 失败原因：API key 未配置 / 网络错误 / JSON 解析失败 / rate limit
 - 失败时 `sync_log.items_distilled` 不递增，但 `items_new` 仍计
 
-### Agent 调用（v0.3，未实现）
+### Agent 调用（v0.3，已落地）
+
+`prism_sidecar/mcp_server.py`（`prism-mcp` 入口）是一个独立的 stdio MCP 进程，
+自己开 `~/.prism/data.db`（**Prism app 不必在跑**）。复用 `init_db()` +
+`store.py`，只读性在工具层保证；写工具直连 DB（`POST /api/sources` 本就是纯
+passthrough，直写零损失）。`init_db` 设 `busy_timeout=5000` 防跨进程写并发。
 
 ```
-[Claude Code / Cursor] → MCP client (stdio) → prism mcp server
-                                             → [search, read, subscribe tools]
-                                             → returns KnowledgeItem
+[Claude Code / Cursor] → MCP client (stdio) → prism-mcp (独立进程, 自开 SQLite)
+   读:   prism_search / prism_recent_items / prism_get_item / prism_list_sources
+   写:   prism_subscribe(早期配置校验) / prism_set_source_enabled   ← 无删除(cascade 太狠)
+   钩:   prism_register_webhook / prism_list_webhooks / prism_set_webhook_enabled
 ```
+
+**Webhook 推送**（反向：sidecar → 外部）。注册走 MCP（直写 `webhooks` 表），
+投递发生在 sidecar 的 sync 里：
+
+```
+run_source_sync 成功 → webhooks.dispatch_for_items(new_item_ids)
+   → 按 source_id 且/或 tag(∈tagsZh) 匹配 enabled webhooks
+   → POST {event, items:[…]} + 头 X-Prism-Signature: sha256=HMAC(secret, body)
+   → 2xx: fail_streak=0 ; 失败/超时: fail_streak++ , ≥PRISM_WEBHOOK_MAX_FAILS 自动停用
+```
+
+安全：`webhooks.assert_safe_webhook_url` 只认 http(s)，阻断解析到
+loopback/私网/link-local(含 169.254.169.254 metadata)/reserved/multicast 的
+主机，注册时 + 每次投递前各校验一次（挡 DNS rebinding）。投递每个 webhook 独立
+`try/except`，`dispatch_for_items` 再包一层——**坏 webhook 绝不破坏 sync**。
 
 ## API 契约（v0.2a 引入，v0.2b 扩展）
 
@@ -246,8 +267,9 @@ prism/
 │   │   ├── fts5.py           # SQLite FTS5 全文搜索
 │   │   ├── progress.py       # 提炼进度内存 store（喂给 SSE 流）
 │   │   ├── settings.py       # PROVIDER_SCHEMAS + active_provider.json R/W
-│   │   ├── store.py          # SQLite-backed CRUD
-│   │   ├── mcp_server.py     # 只读 MCP server（stdio，v0.3；复用 init_db + store 读）
+│   │   ├── store.py          # SQLite-backed CRUD（+ v0.3 webhooks）
+│   │   ├── mcp_server.py     # MCP server（stdio，v0.3；读 4 + 写 2 + webhook 3 工具；复用 init_db + store）
+│   │   ├── webhooks.py       # v0.3 webhook 投递 + HMAC + SSRF 守卫（sync 成功后 dispatch）
 │   │   ├── scheduler.py      # APScheduler 集成
 │   │   ├── config.py         # env 读取
 │   │   ├── fetchers/         # 多源抓取
@@ -267,7 +289,7 @@ prism/
 │   │   │   ├── orchestrator.py # job 编排：并发控制/取消/后台任务（从 app.py 拆出）
 │   │   │   └── distill.py      # redistill 批处理
 │   │   └── data/fixtures.py  # 8 个种子源（HN + 3 个 Bilibili PoC + 4 个 RSS）
-│   └── tests/                # pytest 267 个 case（实跑核对）
+│   └── tests/                # pytest 305 个 case（实跑核对）
 ├── docs/                     # ROADMAP, ARCHITECTURE
 ├── scripts/                  # smoke.sh / smoke.ps1
 ├── assets/                   # logo / icons
@@ -358,13 +380,13 @@ CREATE VIRTUAL TABLE items_fts USING fts5(
 - 内存占用：< 300MB idle（vs Electron 500MB+）
 - 安装包大小：< 30MB（vs Electron 150MB+）
 
-## 测试覆盖（v0.2c 已完成）
+## 测试覆盖（v0.2c 已完成 + v0.3 进行中）
 
-> 下面的 case 数是 2026-07-10 在本机**现场跑出来**的（Python 侧另用 `pytest --collect-only` 逐文件核对）。此前这张表写的是静态数 `def test_` 得出的估计值，和 AGENTS.md 里的数字长期互相矛盾（175 vs 222）；实跑 v0.2c 收尾时是 254，v0.3 加上 MCP server 的 13 个后为 267。
+> 下面的 case 数是在本机**现场跑出来**的（Python 侧另用 `pytest --collect-only` 逐文件核对）。此前这张表写的是静态数 `def test_` 得出的估计值，和 AGENTS.md 里的数字长期互相矛盾（175 vs 222）；实跑 v0.2c 收尾时是 254，v0.3 只读 MCP +13 → 267，写工具 + webhook +38 → 305（2026-07-11）。
 
 | 层级 | 工具 | 覆盖 |
 |---|---|---|
-| Python fetcher/distiller/store/sync/api/mcp | `cd python && uv run pytest -v` — **267/267 绿** | bilibili prompt 31 / **x fetcher 23** / deepseek distiller 22 / bilibili fetcher 18 / FTS5 17 / **youtube fetcher 16** / settings api 20 / **retry+throttle 13** / **mcp server 13**（v0.3）/ sync 12 / api 12 / provider registry 11 / minimax distiller 11 / **fetcher registry 11**（含 `lookback_days` 签名回归）/ store 9 / **arxiv fetcher 8** / rss 7 / distill 5 / **podcast fetcher 4** / hn 4 |
+| Python fetcher/distiller/store/sync/api/mcp/webhook | `cd python && uv run pytest -v` — **305/305 绿** | bilibili prompt 31 / **mcp server 26**（v0.3 读+写+webhook 工具）/ **x fetcher 23** / deepseek distiller 22 / **webhooks 21**（v0.3 SSRF/HMAC/投递/fail-streak）/ bilibili fetcher 18 / FTS5 17 / **youtube fetcher 16** / settings api 20 / **retry+throttle 13** / sync 12 / api 12 / provider registry 11 / minimax distiller 11 / **fetcher registry 11**（含 `lookback_days` 签名回归）/ **store 13**（+webhook CRUD/v4 migration）/ **arxiv fetcher 8** / rss 7 / distill 5 / **podcast fetcher 4** / hn 4 |
 | Rust keystore | `cargo test --test keystore_smoke` | **8/8 绿**（roundtrip+密文无明文 / 0600 / 损坏容错 / 并发写 / key_last4 / active-provider 校验 / 迁移幂等 / 真 macOS Keychain migration roundtrip） |
 | Rust 公开 helper + IPC serde | `cargo test --test llm_config_smoke` | **9/9 绿**（username 格式 / is_known_provider / default_model / CustomLlmConfig JSON 形状 / IPC camelCase，含 `keyLast4`/`keyLength`）。注：v0.2b~v0.2c 期间这个 target 一直**编译不过**（结构体加了字段、测试没跟），v0.2c 收尾才修好 |
 | React 关键组件 | `npm test` — **28/28 绿** | Button 3 / DetailPanel 4 / inline-markdown 10 / InboxPage 2 / SettingsPage 4 / SourcesPage 5 |

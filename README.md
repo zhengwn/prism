@@ -22,11 +22,11 @@ Prism 是一个 **AI 资讯聚合 + 知识提炼** 桌面应用，把分散在 R
 
 **v0.2c 已完成**（2026-07-10 本机全量验证）：Bilibili fetcher 作为 PoC 合入 main（mid/bvid 两种模式 + CC/AI 字幕合并 + 章节切分 + Bilibili 专属提炼 prompt，前端 SourcesPage/DetailPanel 已接入）。本轮新增：**YouTube fetcher**（yt-dlp，channel/video 两模式 + 字幕四级优先 + 共享 `[CC]/[AI]` 字幕格式复用视频提炼 prompt，前端播放器/badge/i18n 已接入）和**错误重试 + 速率限制**（`FetchError` 契约让整源失败真正落到 `sources.last_error`；`retry_async` + per-host `HostThrottle`；失败冷却 min(2^n,24)h + 每小时补跑 job）——设计稿见 `docs/design/`。本轮再加：**Podcast fetcher**（继承 RSSFetcher，enclosure/itunes:duration）、**arXiv fetcher**（新增 arxiv kind，categories 配置 + 3s API 限速）、**优雅关闭**（SIGTERM → in-flight job 在 per-source 检查点落盘部分进度再退，Tauri 5s 宽限）、**Vite 下 setApiKey 报错修复**。sidecar 内部也做了一轮拆分：同步 job 的并发控制/取消逻辑从 `app.py` 挪到了独立的 `pipeline/orchestrator.py`，路由文件瘦身到 500 多行。收尾一轮再加：**X fetcher（bridge-RSS PoC）**（继承 RSSFetcher，指向自托管 RSSHub/Nitter feed，handle 解析 + tweet 元数据 + X 短文本专属 prompt）、**Apply & Restart Sidecar 按钮**（`restart_sidecar` command，改 key 后不必重启整个 app）、**Playwright 前端 E2E**（hermetic mock sidecar，5 个 smoke case；Tauri-shell 层留待 WebdriverIO + `@wdio/tauri-service`，macOS 无原版 tauri-driver）。
 
-测试（**本机实跑，非静态计数**）：pytest **267/267**（v0.2c 254 + v0.3 MCP server 13）· vitest **28/28** · Rust **17/17**（keystore_smoke 8 + llm_config_smoke 9）· Playwright E2E **5/5** · `cargo check --all-targets` + `npm run build` 干净。复核：`cd python && uv run pytest -v` / `npm test` / `cargo test` / `npm run test:e2e`。
+测试（**本机实跑，非静态计数**）：pytest **305/305**（v0.2c 254 + v0.3 MCP 读 13 + 写/webhook 38）· vitest **28/28** · Rust **17/17**（keystore_smoke 8 + llm_config_smoke 9）· Playwright E2E **5/5** · `cargo check --all-targets` + `npm run build` 干净。复核：`cd python && uv run pytest -v` / `npm test` / `cargo test` / `npm run test:e2e`。
 
 收尾验证时修掉了三个真实缺陷（浮点 jitter 断言、`llm_config_smoke.rs` 自 v0.2b 起编译不过、vitest 误收 Playwright spec），并真跑了 sidecar 端到端（真实 RSS 30 条 / arXiv 50 条、`FetchError` → `last_error` + 24h 冷却、SIGTERM 中断 sync 3.87s 内落盘部分进度）。详见 `docs/ROADMAP.md` 的「v0.2c 收尾验证」。
 
-v0.3 已开工：**只读 MCP server 已落地**（`prism-mcp`，stdio 四工具，见下面「Agent 接入」）；下一步 subscribe 工具 + Skill bundle。
+v0.3 进行中：**MCP server 已落地**（`prism-mcp`，stdio 九工具——读 4 + 写 subscribe/set_enabled + webhook 注册 3，见下面「Agent 接入」）+ **Webhook 推送**（新条目按源/标签匹配后 sidecar HMAC 签名 POST）+ **Claude Code Skill bundle**（`skills/prism-knowledge-base/`）。下一步 Skill 的 OpenCode/Mavis manifest。
 
 详细规划见 [`docs/ROADMAP.md`](./docs/ROADMAP.md)。
 
@@ -87,13 +87,15 @@ Dev 模式下：
 
 ### Agent 接入（MCP，v0.3）
 
-Prism 的本地知识库可以直接喂给 Agent——stdio 模式的只读 MCP server，**app 不用在跑**：
+Prism 的本地知识库可以直接喂给 Agent——stdio 模式的 MCP server，**app 不用在跑**：
 
 ```bash
 claude mcp add prism -- uv --directory /path/to/prism/python run prism-mcp
 ```
 
-四个工具：`prism_search`（FTS5 双语全文搜索）/ `prism_recent_items` / `prism_get_item` / `prism_list_sources`。详见 `python/README.md`。
+九个工具：读——`prism_search`（FTS5 双语全文搜索）/ `prism_recent_items` / `prism_get_item` / `prism_list_sources`；写——`prism_subscribe`（加源，带早期配置校验）/ `prism_set_source_enabled`；webhook——`prism_register_webhook`（新条目按源/标签匹配后 HMAC 签名 POST 给你的服务）/ `prism_list_webhooks` / `prism_set_webhook_enabled`。**刻意无删除**，停用即可（删源会 cascade 删所有条目）。详见 `python/README.md`。
+
+想让 Agent 用好这些工具，附带一个 **Claude Code Skill**（`skills/prism-knowledge-base/`）——`cp -r skills/prism-knowledge-base ~/.claude/skills/` 即可，教 Agent 何时用哪个工具、怎么用中文总结。
 
 ---
 
@@ -132,15 +134,16 @@ prism/
 │   │   ├── fts5.py           # SQLite FTS5 全文搜索（v0.2b）
 │   │   ├── progress.py       # 提炼进度内存 store（v0.2b）
 │   │   ├── settings.py       # active provider R/W
-│   │   ├── store.py          # SQLite-backed CRUD
-│   │   ├── mcp_server.py     # 只读 MCP server（stdio，v0.3；prism-mcp 入口）
+│   │   ├── store.py          # SQLite-backed CRUD（含 v0.3 webhooks）
+│   │   ├── mcp_server.py     # MCP server（stdio，v0.3；prism-mcp 入口；读 4 + 写 2 + webhook 3 工具）
+│   │   ├── webhooks.py       # webhook 投递 + HMAC 签名 + SSRF 守卫（v0.3）
 │   │   ├── scheduler.py      # APScheduler 集成（每天 9am Asia/Shanghai）
 │   │   ├── config.py         # 读 env
 │   │   ├── fetchers/         # 多源抓取（base + rss + hackernews + bilibili PoC + registry）
 │   │   ├── distillers/       # LLM 提炼（base + deepseek + minimax + bilibili_prompt + registry）
 │   │   ├── pipeline/         # sync.py（单源）+ orchestrator.py（job 编排/取消）+ distill.py（重蒸馏批处理）
 │   │   └── data/fixtures.py  # 8 个种子源（HN + 3 个 Bilibili PoC + 4 个 RSS）
-│   └── tests/                # pytest 267 个 case（实跑核对；含 bilibili/youtube/arxiv/x fetcher、retry、fetcher registry、mcp server）
+│   └── tests/                # pytest 305 个 case（实跑核对；含 bilibili/youtube/arxiv/x fetcher、retry、fetcher registry、mcp server）
 ├── docs/                     # 设计文档
 │   ├── ROADMAP.md
 │   └── ARCHITECTURE.md
@@ -159,7 +162,7 @@ prism/
 - [x] **v0.2a** — 最小可用：SQLite + 真抓取 + DeepSeek 提炼 + 调度
 - [x] **v0.2b** — 基础设施重构 + UX 打磨（本地 keystore / 2 provider / 实时进度 / 可取消 / FTS5 / 详情 markdown）
 - [x] **v0.2c** — 多源补齐 + 错误处理：七路 fetcher（RSS/HN/Bilibili/YouTube/Podcast/arXiv/X）+ 重试/限速/冷却 + 优雅关闭 + Playwright E2E，全部本机实测
-- [ ] **v0.3**（进行中）— Agent 接口：只读 MCP server（stdio 四工具）已落地；subscribe 工具 / Skill bundle / Webhook 待做
+- [ ] **v0.3**（进行中）— Agent 接口：MCP server（stdio 九工具，含 subscribe/webhook 写）+ Webhook 推送 + Claude Code Skill bundle 已落地；剩 Skill 的 OpenCode/Mavis manifest
 - [ ] **v0.4** — 跨平台打包（Windows MSI / macOS DMG / sidecar 打包）
 - [ ] **v0.5** — UX 完善（标签 / ⌘K / 通知）
 - [ ] **v1.0** — 公开发布

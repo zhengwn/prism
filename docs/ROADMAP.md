@@ -2,7 +2,7 @@
 
 > 公开 v1.0 之前的规划。v0.2c（多源补齐）**已收尾并在本机全量验证过**（2026-07-10）：Bilibili、YouTube、Podcast、arXiv、**X（bridge-RSS PoC）** 五路 fetcher + 错误重试/速率限制 + 优雅关闭 + Vite setApiKey 修复 + **Apply & Restart Sidecar 按钮**；**Playwright 前端 E2E 已跑绿**（Tauri-shell 层留待 WebdriverIO + `@wdio/tauri-service`；macOS 无原版 tauri-driver）。v0.3 已开工：**只读 MCP server（stdio）已落地**（`prism-mcp`，四工具，真实 stdio 冒烟过），见 v0.3 段。
 >
-> **实测结果**（不再是静态计数）：`uv run pytest` **267/267 绿**（v0.2c 254 + v0.3 MCP server 13）· `npm test` **28/28 绿** · `cargo test` **17/17 绿**（keystore 8 + llm_config 9）· `cargo check --all-targets` 干净 · `npm run build` 干净 · `npm run test:e2e` **5/5 绿**。v0.2c 跑之前修掉了三个真实缺陷；随后又用真实 MiniMax key 跑通了 **distill 端到端**（2 条真实 LLM 调用 + FTS5 索引验证），另修两个附带问题。见下面「收尾验证」小节。
+> **实测结果**（不再是静态计数）：`uv run pytest` **305/305 绿**（v0.2c 254 + v0.3 MCP server 13）· `npm test` **28/28 绿** · `cargo test` **17/17 绿**（keystore 8 + llm_config 9）· `cargo check --all-targets` 干净 · `npm run build` 干净 · `npm run test:e2e` **5/5 绿**。v0.2c 跑之前修掉了三个真实缺陷；随后又用真实 MiniMax key 跑通了 **distill 端到端**（2 条真实 LLM 调用 + FTS5 索引验证），另修两个附带问题。见下面「收尾验证」小节。
 
 ## 实际状态
 
@@ -156,11 +156,12 @@
 
 ## v0.3 — Agent 接口（进行中）
 
-- [x] **MCP server（stdio 模式）**：`prism_sidecar/mcp_server.py` + `prism-mcp` 入口（2026-07-10）。只读切片——复用 sidecar 的 `init_db()` + `store.py` 读函数（零查询重复，FTS 索引由幂等迁移保证），只读性在工具层保证；**app 不用在跑**，`prism-mcp` 进程自己开 SQLite（WAL 跨进程一写多读）。官方 `mcp` SDK pin `>=1.28,<2`（2.0.0b1 有破坏性改名）。stdout 是协议信道，日志全走 stderr。接入：`claude mcp add prism -- uv --directory .../python run prism-mcp`
+- [x] **MCP server（stdio 模式）**：`prism_sidecar/mcp_server.py` + `prism-mcp` 入口（2026-07-10；写工具 2026-07-11）。起步是只读切片——复用 sidecar 的 `init_db()` + `store.py` 读函数（零查询重复，FTS 索引由幂等迁移保证），只读性在工具层保证；**app 不用在跑**，`prism-mcp` 进程自己开 SQLite（WAL 跨进程一写多读）。官方 `mcp` SDK pin `>=1.28,<2`（2.0.0b1 有破坏性改名）。stdout 是协议信道，日志全走 stderr。接入：`claude mcp add prism -- uv --directory .../python run prism-mcp`
 - [x] **read / search 工具**：`prism_search`（FTS5 排名，垃圾 query 前置拒绝——`store.list_items` 的静默回退对 inbox 正确、对 Agent 是坑）/ `prism_recent_items` / `prism_get_item`（缺失 → `ToolError`）/ `prism_list_sources`；列表工具返回 REST camelCase 形状的精简子集（省 token），get_item 全量
-- [ ] **subscribe 工具**（写操作，刻意留到下一切片——先让只读形状被真实 Agent 用一轮）
-- [ ] Skill bundle（Mavis / OpenCode / Claude Code 格式）
-- [ ] Webhook：外部 Agent 订阅特定标签 / 源
+- [x] **subscribe / manage 工具**（写操作，2026-07-11）：`prism_subscribe`（建源,**早期配置校验**——复用各 fetcher 自己的校验器 `arxiv.parse_categories`/`x.resolve_feed_url`/`youtube.parse_*_ref`/bilibili mid|bvid，坏配置当场 `ToolError` 而非下次 sync 才悄悄失败，比纯 passthrough 的 `POST /api/sources` 强）+ `prism_set_source_enabled`（可逆停用）。**刻意不做删除**——删源 cascade 删所有条目,Agent 一次调用的不可逆数据丢失,停用即可。直连 DB 写（`store.create_source`,保住 app 不用在跑）;`init_db` 加 `busy_timeout=5000` 防跨进程写并发 `SQLITE_BUSY`
+- [x] **Webhook：外部 Agent 订阅特定标签 / 源**（2026-07-11）：schema v4 新增 `webhooks` 表（纯新增,无 rebuild）;MCP 注册 `prism_register_webhook`(url/source_id?/tag?,返回 HMAC secret **仅一次**)/`prism_list_webhooks`(secret 掩码 last4)/`prism_set_webhook_enabled`;sidecar 侧 `webhooks.py` 在 `run_source_sync` 成功后 `dispatch_for_items`——按 source_id 且/或 tag(∈tagsZh)匹配,POST 带 `X-Prism-Signature: sha256=<hmac>`,超时/失败 bump fail_streak、到 `PRISM_WEBHOOK_MAX_FAILS`(10)自动停用。**投递绝不破坏 sync**(每个独立 try/except + dispatch 再包一层)。**SSRF 守卫**(最高护理):只认 http(s),阻断 loopback/私网/link-local(含 169.254.169.254 metadata)/reserved/multicast,注册时 + 投递前各解析校验一次(挡 DNS rebinding)
+- [x] **Skill bundle（Claude Code 格式）**：`skills/prism-knowledge-base/SKILL.md`——教 Agent 用 prism_* 工具的判断力(discover→search→drill in + manage + notify、每种 kind 的 subscribe config 形状、webhook 一次性 secret 流程、何时确认写操作),description 写到不点名 Prism 也能触发。OpenCode/Mavis manifest 是同文件的薄包装,列为后续
+- [ ] Skill bundle 的 OpenCode / Mavis manifest（同 `SKILL.md`,不同外壳）
 
 ## v0.4 — 跨平台打包
 
