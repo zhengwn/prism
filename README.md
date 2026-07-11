@@ -9,7 +9,7 @@ Prism 是一个 **AI 资讯聚合 + 知识提炼** 桌面应用，把分散在 R
 
 ---
 
-## 当前状态：v0.2c 已完成，v0.3 进行中
+## 当前状态：v0.3 已完成，下一步 v0.4 打包
 
 **v0.2b 已交付**（2026-06-10）：v0.2a 之后的一轮基础设施重构 + UX 打磨——
 
@@ -26,7 +26,7 @@ Prism 是一个 **AI 资讯聚合 + 知识提炼** 桌面应用，把分散在 R
 
 收尾验证时修掉了三个真实缺陷（浮点 jitter 断言、`llm_config_smoke.rs` 自 v0.2b 起编译不过、vitest 误收 Playwright spec），并真跑了 sidecar 端到端（真实 RSS 30 条 / arXiv 50 条、`FetchError` → `last_error` + 24h 冷却、SIGTERM 中断 sync 3.87s 内落盘部分进度）。详见 `docs/ROADMAP.md` 的「v0.2c 收尾验证」。
 
-v0.3 进行中：**MCP server 已落地**（`prism-mcp`，stdio 九工具——读 4 + 写 subscribe/set_enabled + webhook 注册 3，见下面「Agent 接入」）+ **Webhook 推送**（新条目按源/标签匹配后 sidecar HMAC 签名 POST）+ **Claude Code Skill bundle**（`skills/prism-knowledge-base/`）。下一步 Skill 的 OpenCode/Mavis manifest。
+**v0.3 已完成**（2026-07-11）：**MCP server**（`prism-mcp`，stdio 九工具——读 4 + 写 subscribe/set_enabled + webhook 注册 3，见下面「Agent 接入」）+ **Webhook 推送**（新条目按源/标签匹配后 sidecar HMAC 签名 POST，含 SSRF 守卫）+ **Skill bundle**（`skills/prism-knowledge-base/`，可移植 Agent Skills 开放标准 + OpenCode `opencode.jsonc` 接入）。下一步 v0.4 跨平台打包。
 
 详细规划见 [`docs/ROADMAP.md`](./docs/ROADMAP.md)。
 
@@ -162,7 +162,7 @@ prism/
 - [x] **v0.2a** — 最小可用：SQLite + 真抓取 + DeepSeek 提炼 + 调度
 - [x] **v0.2b** — 基础设施重构 + UX 打磨（本地 keystore / 2 provider / 实时进度 / 可取消 / FTS5 / 详情 markdown）
 - [x] **v0.2c** — 多源补齐 + 错误处理：七路 fetcher（RSS/HN/Bilibili/YouTube/Podcast/arXiv/X）+ 重试/限速/冷却 + 优雅关闭 + Playwright E2E，全部本机实测
-- [ ] **v0.3**（进行中）— Agent 接口：MCP server（stdio 九工具，含 subscribe/webhook 写）+ Webhook 推送 + Claude Code Skill bundle 已落地；剩 Skill 的 OpenCode/Mavis manifest
+- [x] **v0.3** — Agent 接口：MCP server（stdio 九工具，含 subscribe/webhook 写）+ Webhook 推送（HMAC + SSRF）+ Skill bundle（Agent Skills 开放标准 + OpenCode 接入）
 - [ ] **v0.4** — 跨平台打包（Windows MSI / macOS DMG / sidecar 打包）
 - [ ] **v0.5** — UX 完善（标签 / ⌘K / 通知）
 - [ ] **v1.0** — 公开发布

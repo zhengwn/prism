@@ -1,0 +1,31 @@
+// OpenCode integration for the Prism knowledge base.
+//
+// OpenCode has no separate "skill" packaging — it consumes the portable
+// SKILL.md directly. Two pieces wire Prism in:
+//   1. `mcp.prism` registers the same stdio server Claude Code uses
+//      (prism-mcp), so the prism_* tools are available.
+//   2. `instructions` loads SKILL.md so the agent gets the same
+//      when-to-use-which-tool guidance — same file, different shell.
+//
+// Merge this into your project's ./opencode.json (or the global
+// ~/.config/opencode/opencode.json). Replace the --directory path with
+// your checkout. OpenCode accepts JSONC, so these comments are fine.
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "prism": {
+      "type": "local",
+      "command": [
+        "uv",
+        "--directory",
+        "/path/to/prism/python",
+        "run",
+        "prism-mcp"
+      ],
+      "enabled": true
+    }
+  },
+  "instructions": [
+    "./skills/prism-knowledge-base/SKILL.md"
+  ]
+}

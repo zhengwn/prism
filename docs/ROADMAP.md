@@ -154,14 +154,14 @@
 - **distill 的 JSON 解析兜底**（全角引号救援等）：`key_invalid` 已实测,但要让真实 LLM 确定性地吐坏 JSON 不可行,这条只能靠单测钉住
 - **YouTube channel 模式 / Bilibili 字幕合并的实网路径**：这轮实测的是 YouTube 单视频 + Bilibili 视频列表;channel 列表倒序截断、CC/AI 双轨合并这些分支在真实数据上仍未跑过
 
-## v0.3 — Agent 接口（进行中）
+## v0.3 — Agent 接口 ✅
 
 - [x] **MCP server（stdio 模式）**：`prism_sidecar/mcp_server.py` + `prism-mcp` 入口（2026-07-10；写工具 2026-07-11）。起步是只读切片——复用 sidecar 的 `init_db()` + `store.py` 读函数（零查询重复，FTS 索引由幂等迁移保证），只读性在工具层保证；**app 不用在跑**，`prism-mcp` 进程自己开 SQLite（WAL 跨进程一写多读）。官方 `mcp` SDK pin `>=1.28,<2`（2.0.0b1 有破坏性改名）。stdout 是协议信道，日志全走 stderr。接入：`claude mcp add prism -- uv --directory .../python run prism-mcp`
 - [x] **read / search 工具**：`prism_search`（FTS5 排名，垃圾 query 前置拒绝——`store.list_items` 的静默回退对 inbox 正确、对 Agent 是坑）/ `prism_recent_items` / `prism_get_item`（缺失 → `ToolError`）/ `prism_list_sources`；列表工具返回 REST camelCase 形状的精简子集（省 token），get_item 全量
 - [x] **subscribe / manage 工具**（写操作，2026-07-11）：`prism_subscribe`（建源,**早期配置校验**——复用各 fetcher 自己的校验器 `arxiv.parse_categories`/`x.resolve_feed_url`/`youtube.parse_*_ref`/bilibili mid|bvid，坏配置当场 `ToolError` 而非下次 sync 才悄悄失败，比纯 passthrough 的 `POST /api/sources` 强）+ `prism_set_source_enabled`（可逆停用）。**刻意不做删除**——删源 cascade 删所有条目,Agent 一次调用的不可逆数据丢失,停用即可。直连 DB 写（`store.create_source`,保住 app 不用在跑）;`init_db` 加 `busy_timeout=5000` 防跨进程写并发 `SQLITE_BUSY`
 - [x] **Webhook：外部 Agent 订阅特定标签 / 源**（2026-07-11）：schema v4 新增 `webhooks` 表（纯新增,无 rebuild）;MCP 注册 `prism_register_webhook`(url/source_id?/tag?,返回 HMAC secret **仅一次**)/`prism_list_webhooks`(secret 掩码 last4)/`prism_set_webhook_enabled`;sidecar 侧 `webhooks.py` 在 `run_source_sync` 成功后 `dispatch_for_items`——按 source_id 且/或 tag(∈tagsZh)匹配,POST 带 `X-Prism-Signature: sha256=<hmac>`,超时/失败 bump fail_streak、到 `PRISM_WEBHOOK_MAX_FAILS`(10)自动停用。**投递绝不破坏 sync**(每个独立 try/except + dispatch 再包一层)。**SSRF 守卫**(最高护理):只认 http(s),阻断 loopback/私网/link-local(含 169.254.169.254 metadata)/reserved/multicast,注册时 + 投递前各解析校验一次(挡 DNS rebinding)
-- [x] **Skill bundle（Claude Code 格式）**：`skills/prism-knowledge-base/SKILL.md`——教 Agent 用 prism_* 工具的判断力(discover→search→drill in + manage + notify、每种 kind 的 subscribe config 形状、webhook 一次性 secret 流程、何时确认写操作),description 写到不点名 Prism 也能触发。OpenCode/Mavis manifest 是同文件的薄包装,列为后续
-- [ ] Skill bundle 的 OpenCode / Mavis manifest（同 `SKILL.md`,不同外壳）
+- [x] **Skill bundle**：`skills/prism-knowledge-base/SKILL.md`——教 Agent 用 prism_* 工具的判断力(discover→search→drill in + manage + notify、每种 kind 的 subscribe config 形状、webhook 一次性 secret 流程、何时确认写操作),description 写到不点名 Prism 也能触发。**SKILL.md 本身就是可移植的 Agent Skills 开放标准**(Anthropic 起草),frontmatter 加了 `version`/`agents` 标注适配的 runtime
+- [x] **OpenCode 接入**：`skills/prism-knowledge-base/opencode.jsonc`——`mcp.prism`(type=local,`uv … run prism-mcp`)注册同一个 stdio server + `instructions:["…/SKILL.md"]` 复用同一份指引(同文件,不同外壳)。**Mavis 及其它遵循 Agent Skills 标准的 runtime 直接读 SKILL.md,无需单独 manifest**——查证后确认没有独立的 "Mavis skill 格式",`.mavis/` 是构建规划工具而非 skill runtime;每个 runtime 只需按自己的方式注册 `prism-mcp`(Claude Code `claude mcp add` / OpenCode `opencode.jsonc`)
 
 ## v0.4 — 跨平台打包
 

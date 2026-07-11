@@ -11,6 +11,13 @@ description: >-
   "找一下我之前存的那篇关于 agent 的", "订阅一下 Simon Willison 的博客",
   "有新论文推给我". Reaches the data over the Prism MCP server; the Prism app
   need not be running.
+version: 0.3.0
+# Runtimes known to consume this portable Agent Skills format. Claude Code
+# reads it directly; OpenCode loads it via the `instructions` array (see
+# opencode.jsonc). The format is the Anthropic-originated open standard.
+agents:
+  - claude-code
+  - opencode
 compatibility: Requires the Prism MCP server (`prism-mcp`) configured as an MCP server.
 ---
 

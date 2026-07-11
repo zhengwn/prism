@@ -1,6 +1,6 @@
 # Prism — Architecture
 
-> 截至 v0.3 进行中（2026-07-11）：v0.2c 完成多源补齐——RSS / HN / Bilibili / YouTube / Podcast / arXiv / X（bridge-RSS PoC）七路 fetcher + 错误重试与速率限制 + 优雅关闭；v0.3 已落地 **MCP server**（`prism-mcp`，读 4 + 写 2 + webhook 3 工具）+ **Webhook 推送** + **Claude Code Skill bundle**。之后会加 sqlite-vec 语义搜索、跨平台打包等。
+> 截至 v0.3 完成（2026-07-11）：v0.2c 完成多源补齐——RSS / HN / Bilibili / YouTube / Podcast / arXiv / X（bridge-RSS PoC）七路 fetcher + 错误重试与速率限制 + 优雅关闭；v0.3 已落地 **MCP server**（`prism-mcp`，读 4 + 写 2 + webhook 3 工具）+ **Webhook 推送** + **Claude Code Skill bundle**。之后会加 sqlite-vec 语义搜索、跨平台打包等。
 
 ## 总览
 
@@ -380,7 +380,7 @@ CREATE VIRTUAL TABLE items_fts USING fts5(
 - 内存占用：< 300MB idle（vs Electron 500MB+）
 - 安装包大小：< 30MB（vs Electron 150MB+）
 
-## 测试覆盖（v0.2c 已完成 + v0.3 进行中）
+## 测试覆盖（v0.3 完成）
 
 > 下面的 case 数是在本机**现场跑出来**的（Python 侧另用 `pytest --collect-only` 逐文件核对）。此前这张表写的是静态数 `def test_` 得出的估计值，和 AGENTS.md 里的数字长期互相矛盾（175 vs 222）；实跑 v0.2c 收尾时是 254，v0.3 只读 MCP +13 → 267，写工具 + webhook +38 → 305（2026-07-11）。
 
