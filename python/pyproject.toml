@@ -16,10 +16,12 @@ dependencies = [
     "python-dateutil>=2.9",
     "bilibili-api-python>=17.4.1",
     "yt-dlp>=2025.6.9",
+    "mcp>=1.28,<2",
 ]
 
 [project.scripts]
 prism-sidecar = "prism_sidecar.__main__:main"
+prism-mcp = "prism_sidecar.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]
