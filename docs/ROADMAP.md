@@ -1,8 +1,8 @@
 # Prism — Roadmap
 
-> 公开 v1.0 之前的规划。v0.2c（多源补齐）**已收尾并在本机全量验证过**（2026-07-10）：Bilibili、YouTube、Podcast、arXiv、**X（bridge-RSS PoC）** 五路 fetcher + 错误重试/速率限制 + 优雅关闭 + Vite setApiKey 修复 + **Apply & Restart Sidecar 按钮**；**Playwright 前端 E2E 已跑绿**（Tauri-shell 层留待 WebdriverIO + `@wdio/tauri-service`；macOS 无原版 tauri-driver）。
+> 公开 v1.0 之前的规划。v0.2c（多源补齐）**已收尾并在本机全量验证过**（2026-07-10）：Bilibili、YouTube、Podcast、arXiv、**X（bridge-RSS PoC）** 五路 fetcher + 错误重试/速率限制 + 优雅关闭 + Vite setApiKey 修复 + **Apply & Restart Sidecar 按钮**；**Playwright 前端 E2E 已跑绿**（Tauri-shell 层留待 WebdriverIO + `@wdio/tauri-service`；macOS 无原版 tauri-driver）。v0.3 已开工：**只读 MCP server（stdio）已落地**（`prism-mcp`，四工具，真实 stdio 冒烟过），见 v0.3 段。
 >
-> **实测结果**（不再是静态计数）：`uv run pytest` **254/254 绿** · `npm test` **28/28 绿** · `cargo test` **17/17 绿**（keystore 8 + llm_config 9）· `cargo check --all-targets` 干净 · `npm run build` 干净 · `npm run test:e2e` **5/5 绿**。跑之前修掉了三个真实缺陷；随后又用真实 MiniMax key 跑通了 **distill 端到端**（2 条真实 LLM 调用 + FTS5 索引验证），另修两个附带问题。见下面「收尾验证」小节。
+> **实测结果**（不再是静态计数）：`uv run pytest` **267/267 绿**（v0.2c 254 + v0.3 MCP server 13）· `npm test` **28/28 绿** · `cargo test` **17/17 绿**（keystore 8 + llm_config 9）· `cargo check --all-targets` 干净 · `npm run build` 干净 · `npm run test:e2e` **5/5 绿**。v0.2c 跑之前修掉了三个真实缺陷；随后又用真实 MiniMax key 跑通了 **distill 端到端**（2 条真实 LLM 调用 + FTS5 索引验证），另修两个附带问题。见下面「收尾验证」小节。
 
 ## 实际状态
 
@@ -154,11 +154,12 @@
 - **distill 的 JSON 解析兜底**（全角引号救援等）：`key_invalid` 已实测,但要让真实 LLM 确定性地吐坏 JSON 不可行,这条只能靠单测钉住
 - **YouTube channel 模式 / Bilibili 字幕合并的实网路径**：这轮实测的是 YouTube 单视频 + Bilibili 视频列表;channel 列表倒序截断、CC/AI 双轨合并这些分支在真实数据上仍未跑过
 
-## v0.3 — Agent 接口
+## v0.3 — Agent 接口（进行中）
 
-- [ ] MCP server（stdio 模式，让 Claude Code / Cursor / OpenCode 等 Agent 调用）
+- [x] **MCP server（stdio 模式）**：`prism_sidecar/mcp_server.py` + `prism-mcp` 入口（2026-07-10）。只读切片——复用 sidecar 的 `init_db()` + `store.py` 读函数（零查询重复，FTS 索引由幂等迁移保证），只读性在工具层保证；**app 不用在跑**，`prism-mcp` 进程自己开 SQLite（WAL 跨进程一写多读）。官方 `mcp` SDK pin `>=1.28,<2`（2.0.0b1 有破坏性改名）。stdout 是协议信道，日志全走 stderr。接入：`claude mcp add prism -- uv --directory .../python run prism-mcp`
+- [x] **read / search 工具**：`prism_search`（FTS5 排名，垃圾 query 前置拒绝——`store.list_items` 的静默回退对 inbox 正确、对 Agent 是坑）/ `prism_recent_items` / `prism_get_item`（缺失 → `ToolError`）/ `prism_list_sources`；列表工具返回 REST camelCase 形状的精简子集（省 token），get_item 全量
+- [ ] **subscribe 工具**（写操作，刻意留到下一切片——先让只读形状被真实 Agent 用一轮）
 - [ ] Skill bundle（Mavis / OpenCode / Claude Code 格式）
-- [ ] Prism 内知识库的 read / search / subscribe 工具
 - [ ] Webhook：外部 Agent 订阅特定标签 / 源
 
 ## v0.4 — 跨平台打包
