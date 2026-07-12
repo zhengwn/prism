@@ -2,7 +2,7 @@
 
 > 公开 v1.0 之前的规划。v0.2c（多源补齐）**已收尾并在本机全量验证过**（2026-07-10）：Bilibili、YouTube、Podcast、arXiv、**X（bridge-RSS PoC）** 五路 fetcher + 错误重试/速率限制 + 优雅关闭 + Vite setApiKey 修复 + **Apply & Restart Sidecar 按钮**；**Playwright 前端 E2E 已跑绿**（Tauri-shell 层留待 WebdriverIO + `@wdio/tauri-service`；macOS 无原版 tauri-driver）。v0.3 已开工：**只读 MCP server（stdio）已落地**（`prism-mcp`，四工具，真实 stdio 冒烟过），见 v0.3 段。
 >
-> **实测结果**（不再是静态计数）：`uv run pytest` **305/305 绿**（v0.2c 254 + v0.3 MCP server 13）· `npm test` **28/28 绿** · `cargo test` **17/17 绿**（keystore 8 + llm_config 9）· `cargo check --all-targets` 干净 · `npm run build` 干净 · `npm run test:e2e` **5/5 绿**。v0.2c 跑之前修掉了三个真实缺陷；随后又用真实 MiniMax key 跑通了 **distill 端到端**（2 条真实 LLM 调用 + FTS5 索引验证），另修两个附带问题。见下面「收尾验证」小节。
+> **实测结果**（不再是静态计数）：`uv run pytest` **305/305 绿**（v0.2c 254 + v0.3 MCP server 13）· `npm test` **36/36 绿**（v0.5 ⌘K 命令面板 +8）· `cargo test` **17/17 绿**（keystore 8 + llm_config 9）· `cargo check --all-targets` 干净 · `npm run build` 干净 · `npm run test:e2e` **7/7 绿**（命令面板 +2）。v0.2c 跑之前修掉了三个真实缺陷；随后又用真实 MiniMax key 跑通了 **distill 端到端**（2 条真实 LLM 调用 + FTS5 索引验证），另修两个附带问题。见下面「收尾验证」小节。
 
 ## 实际状态
 
@@ -191,10 +191,22 @@
   externalBin 或给冻结二进制加子命令
 - [ ] **自动更新（tauri-plugin-updater）**：需托管 release 端点 + 更新签名密钥对
 
-## v0.5 — UX 完善
+## v0.5 — UX 完善（进行中）
 
+- [x] **键盘快捷键（⌘K 命令面板）**（2026-07-12）：新增 `src/components/CommandPalette.tsx`——
+  全局覆盖层，⌘K / Ctrl+K 唤起（TopBar 里那个一直是装饰的 `⌘K` 角标现在是真按钮了），
+  空 query 是命令菜单（前往 4 个页面 / 切换主题 light·dark·system / 切换语言 en·zh），
+  输入即变搜索（信息源按名过滤 → 跳转筛选收件箱；条目走 sidecar FTS5 → 打开详情）。
+  上下键 + 回车 + Esc + 点击外部关闭。**不引第三方库**（cmdk 之类）——UI kit 本来就全是
+  手写原语，面板就一屏列表 + 键盘逻辑。open 状态放 Zustand（`commandPaletteOpen`），
+  因为快捷键监听、TopBar 角标、面板自身三处都要读写它。
+  **实现中抓到一个真 bug**：主题动作原先走 `useTheme()`，但它把 `applyTheme` 放在
+  `useEffect` 里，而面板「跑动作 → 立即 onClose 卸载」发生在同一 tick，卸载的组件那个
+  effect 根本不会 commit，主题切换被丢掉（语言没事——`i18n.changeLanguage` 是同步调的）。
+  改成直接调 `lib/theme` 的全局 helper（DOM class + localStorage，同步、不依赖组件生命周期）。
+  加了回归测试钉住这条。测试：vitest +8（含卸载后主题仍生效的回归）、Playwright e2e +2
+  （⌘K 开→导航→Esc 关；换页后 FTS 搜条目并跳转）。本机浏览器实跑验证过主题/语言/导航三条动作。
 - [ ] 标签 / 收藏夹管理
-- [ ] 键盘快捷键（⌘K 命令面板）
 - [ ] 通知（重要源更新推送）
 - [ ] sqlite-vec 接入（语义搜索）
 

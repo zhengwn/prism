@@ -32,7 +32,7 @@ prism/
 ├── src/                  # React + TS frontend (Vite)
 │   ├── components/
 │   │   ├── ui/           # shadcn-style base components (Button, Card, …)
-│   │   └── layout/       # AppLayout, Sidebar, TopBar, DetailPanel
+│   │   └── layout/       # AppLayout, Sidebar, TopBar, DetailPanel, CommandPalette
 │   ├── pages/            # InboxPage, KnowledgePage, SourcesPage, SettingsPage
 │   ├── lib/              # api.ts (sidecar client), utils.ts (cn, formatRelativeTime)
 │   ├── store/            # Zustand global store
@@ -155,9 +155,9 @@ best-practice, so they live here rather than in agent memory.
 
 - **测试覆盖**（v0.2c 收尾时在本机全量实跑核对过，2026-07-10；下面的数字是真跑出来的，不是数 `def test_` 数出来的）：
   - **Python sidecar**：`cd python && uv run pytest -v` — **305/305 绿**（v0.2c 254 + v0.3 MCP server 13；rss / hn / bilibili / youtube / podcast / arxiv / x fetcher + prompt / retry+throttle / deepseek + minimax distiller / provider registry / store / sync / api / settings api / FTS5 / fetcher registry / mcp server 等）
-  - **React 组件**：`npm test` — **28/28 绿**（button / DetailPanel / inline-markdown / InboxPage / SettingsPage / SourcesPage）
+  - **React 组件**：`npm test` — **36/36 绿**（button / DetailPanel / inline-markdown / InboxPage / SettingsPage / SourcesPage / CommandPalette）
   - **Rust**：`cd src-tauri && cargo test` — **17/17 绿**（keystore_smoke 8 + llm_config_smoke 9）；`cargo check --all-targets` 干净
-  - **前端 E2E**：`npm run test:e2e` — **5/5 绿**（Playwright + hermetic mock sidecar，浏览器层；**挂不到 Tauri 原生 webview**，壳内 `invoke`/keystore 未覆盖）
+  - **前端 E2E**：`npm run test:e2e` — **7/7 绿**（Playwright + hermetic mock sidecar，浏览器层；**挂不到 Tauri 原生 webview**，壳内 `invoke`/keystore 未覆盖）
   - **端到端**：`npm run smoke` — 启动 sidecar → 同步 → 验 items。⚠️ 该脚本**不隔离 `PRISM_DATA_DIR`**，会跑迁移写你真实的 `~/.prism/data.db`；想安全验证就先 `export PRISM_DATA_DIR=$(mktemp -d) PRISM_DAILY_SYNC_DISABLED=1`
 - **写测试时注意**：只用 Fake fetcher 测 `pipeline/sync.py` 会漏掉真实 fetcher 的签名不匹配——v0.2c 的 `lookback_days` `TypeError` 就是这么在生产里藏了整整一个版本（被 `except Exception` 吞成 per-source fetch error）。至少留一个真实 fetcher 走管线的 case。
 - **手动验证**：

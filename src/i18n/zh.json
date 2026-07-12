@@ -14,6 +14,28 @@
   "search": {
     "placeholder": "搜索知识、信息源、标签…"
   },
+  "commandPalette": {
+    "placeholder": "输入命令或搜索…",
+    "sectionNavigate": "前往",
+    "sectionActions": "操作",
+    "sectionSources": "信息源",
+    "sectionItems": "知识",
+    "goInbox": "前往收件箱",
+    "goKnowledge": "前往知识库",
+    "goSources": "前往信息源",
+    "goSettings": "前往设置",
+    "themeLight": "切换到浅色主题",
+    "themeDark": "切换到深色主题",
+    "themeSystem": "跟随系统主题",
+    "langEn": "界面语言切换为 English",
+    "langZh": "界面语言切换为中文",
+    "filterSource": "按此信息源筛选收件箱",
+    "openItem": "在收件箱中打开",
+    "searching": "搜索中…",
+    "empty": "没有匹配“{{query}}”的结果",
+    "itemCountHint": "{{count}} 条匹配",
+    "itemCountHint_other": "{{count}} 条匹配"
+  },
   "sidebar": {
     "sidecarConnected": "Sidecar 已连接"
   },

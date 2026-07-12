@@ -91,3 +91,48 @@ test("settings shows sidecar version and the restart control", async ({ page }) 
   await expect(restart).toBeVisible();
   await expect(restart).toBeEnabled();
 });
+
+test.describe("command palette (⌘K)", () => {
+  test("opens with the shortcut, navigates, and closes on Escape", async ({ page }) => {
+    await page.goto("/inbox");
+
+    const palette = page.getByTestId("command-palette");
+    await expect(palette).toBeHidden();
+
+    // ControlOrMeta maps to ⌘ on macOS and Ctrl elsewhere — the listener
+    // accepts either.
+    await page.keyboard.press("ControlOrMeta+KeyK");
+    await expect(palette).toBeVisible();
+
+    // Escape closes it.
+    await page.keyboard.press("Escape");
+    await expect(palette).toBeHidden();
+
+    // Re-open and jump to the Sources page via a navigation command.
+    await page.keyboard.press("ControlOrMeta+KeyK");
+    await expect(palette).toBeVisible();
+    await page.locator('[data-command-item="nav-sources"]').click();
+
+    await expect(page).toHaveURL(/\/sources$/);
+    await expect(palette).toBeHidden();
+  });
+
+  test("searches items and jumps to one from another page", async ({ page }) => {
+    await page.goto("/sources");
+
+    // The decorative ⌘K chip in the top bar is now a real trigger.
+    await page.getByTestId("command-palette-trigger").click();
+    const palette = page.getByTestId("command-palette");
+    await expect(palette).toBeVisible();
+
+    // Typing runs the FTS search (mock returns the seeded items); pick one.
+    await page.getByTestId("command-palette-input").fill("open-source");
+    const itemEntry = page.locator('[data-command-item="item-item_1"]');
+    await expect(itemEntry).toBeVisible();
+    await itemEntry.click();
+
+    // Choosing an item lands on the inbox with that item selected.
+    await expect(page).toHaveURL(/\/inbox$/);
+    await expect(palette).toBeHidden();
+  });
+});

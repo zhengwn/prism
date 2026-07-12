@@ -14,6 +14,28 @@
   "search": {
     "placeholder": "Search knowledge, sources, tags…"
   },
+  "commandPalette": {
+    "placeholder": "Type a command or search…",
+    "sectionNavigate": "Go to",
+    "sectionActions": "Actions",
+    "sectionSources": "Sources",
+    "sectionItems": "Knowledge",
+    "goInbox": "Go to Inbox",
+    "goKnowledge": "Go to Knowledge",
+    "goSources": "Go to Sources",
+    "goSettings": "Go to Settings",
+    "themeLight": "Switch to light theme",
+    "themeDark": "Switch to dark theme",
+    "themeSystem": "Follow system theme",
+    "langEn": "Switch language to English",
+    "langZh": "Switch language to 中文",
+    "filterSource": "Filter inbox by this source",
+    "openItem": "Open in inbox",
+    "searching": "Searching…",
+    "empty": "No matches for “{{query}}”",
+    "itemCountHint": "{{count}} match",
+    "itemCountHint_other": "{{count}} matches"
+  },
   "sidebar": {
     "sidecarConnected": "Sidecar connected"
   },

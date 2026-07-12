@@ -17,11 +17,17 @@ interface PrismState {
   searchQuery: string;
   statusFilter: "all" | "unread" | "starred" | "archived";
 
+  // Command palette (⌘K) — a global overlay, so its open state lives here
+  // rather than in one page: the shortcut listener, the TopBar affordance,
+  // and the palette itself all read/write the same flag.
+  commandPaletteOpen: boolean;
+
   // Actions
   setSelectedSource: (id: string | null) => void;
   setSelectedItem: (id: string | null) => void;
   setSearchQuery: (q: string) => void;
   setStatusFilter: (s: PrismState["statusFilter"]) => void;
+  setCommandPaletteOpen: (open: boolean) => void;
 }
 
 export const usePrismStore = create<PrismState>((set) => ({
@@ -29,9 +35,11 @@ export const usePrismStore = create<PrismState>((set) => ({
   selectedItemId: null,
   searchQuery: "",
   statusFilter: "all",
+  commandPaletteOpen: false,
 
   setSelectedSource: (id) => set({ selectedSourceId: id, selectedItemId: null }),
   setSelectedItem: (id) => set({ selectedItemId: id }),
   setSearchQuery: (q) => set({ searchQuery: q }),
   setStatusFilter: (s) => set({ statusFilter: s }),
+  setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
 }));

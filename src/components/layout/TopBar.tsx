@@ -9,6 +9,7 @@ import type { Theme } from "@/lib/theme";
 export function TopBar() {
   const searchQuery = usePrismStore((s) => s.searchQuery);
   const setSearchQuery = usePrismStore((s) => s.setSearchQuery);
+  const setCommandPaletteOpen = usePrismStore((s) => s.setCommandPaletteOpen);
   const { theme, setTheme } = useTheme();
   const { t } = useLanguage();
 
@@ -29,9 +30,16 @@ export function TopBar() {
           placeholder={t("search.placeholder")}
           className="h-8 pl-8 pr-16 text-sm"
         />
-        <kbd className="pointer-events-none absolute right-2 top-1/2 hidden h-5 -translate-y-1/2 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium opacity-100 sm:flex">
+        <button
+          type="button"
+          onClick={() => setCommandPaletteOpen(true)}
+          title={t("commandPalette.placeholder")}
+          aria-label={t("commandPalette.placeholder")}
+          data-testid="command-palette-trigger"
+          className="absolute right-2 top-1/2 hidden h-5 -translate-y-1/2 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium opacity-100 transition-colors hover:bg-accent sm:flex"
+        >
           <Command className="h-2.5 w-2.5" />K
-        </kbd>
+        </button>
       </div>
 
       <div className="flex-1" />
