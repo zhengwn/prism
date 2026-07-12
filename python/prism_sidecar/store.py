@@ -24,6 +24,7 @@ from prism_sidecar.models import (
     SyncJobStatus,
     SyncLogEntry,
     SyncResult,
+    TagCount,
     Webhook,
 )
 
@@ -66,7 +67,24 @@ def _row_to_source(row: tuple) -> Source:
     )
 
 
-def _row_to_item(row: tuple, source_name: str | None = None) -> KnowledgeItem:
+# User tags are joined into item rows as a single group_concat string with
+# this delimiter — a control char (unit separator) that add_item_tag rejects
+# in tag text, so it can never collide with a real tag.
+_TAG_SEP = "\x1f"
+
+
+def _split_user_tags(joined: Optional[str]) -> list[str]:
+    """Turn a group_concat(tag, _TAG_SEP) string back into a tag list."""
+    if not joined:
+        return []
+    return [t for t in joined.split(_TAG_SEP) if t]
+
+
+def _row_to_item(
+    row: tuple,
+    source_name: str | None = None,
+    user_tags: Optional[str] = None,
+) -> KnowledgeItem:
     (
         iid,
         sid,
@@ -97,6 +115,7 @@ def _row_to_item(row: tuple, source_name: str | None = None) -> KnowledgeItem:
         summary_zh=summary_zh,
         key_points_zh=json.loads(key_points_zh_json) if key_points_zh_json else [],
         tags_zh=json.loads(tags_zh_json) if tags_zh_json else [],
+        user_tags=_split_user_tags(user_tags),
         author=author,
         published_at=_parse_iso(published_at) or datetime.now(timezone.utc),
         fetched_at=_parse_iso(fetched_at) or datetime.now(timezone.utc),
@@ -428,10 +447,19 @@ async def mark_source_error(source_id: str, error: str) -> None:
 
 # ----- Items --------------------------------------------------------------
 
+# SELECT fragment for the per-row user-tags list, shared by list_items /
+# get_item. Correlated subquery, indexed by item_tags' (item_id, tag) PK.
+_USER_TAGS_SELECT = (
+    "(SELECT group_concat(tag, char(31)) FROM item_tags WHERE item_id = i.id) "
+    "AS user_tags"
+)
+
+
 async def list_items(
     source_id: Optional[str] = None,
     status: Optional[str] = None,
     q: Optional[str] = None,
+    tag: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[KnowledgeItem]:
@@ -474,11 +502,15 @@ async def list_items(
         if status and status != "all":
             where.append("i.status = ?")
             args.append(status)
+        if tag:
+            where.append("EXISTS (SELECT 1 FROM item_tags WHERE item_id = i.id AND tag = ?)")
+            args.append(tag)
         sql = f"""
             SELECT i.id, i.source_id, i.url, i.title_en, i.title_zh, i.summary_en,
                    i.summary_zh, i.key_points_zh, i.tags_zh, i.author,
                    i.published_at, i.fetched_at, i.distilled_at, i.status,
                    i.content_type, i.duration_sec, i.metadata_json,
+                   {_USER_TAGS_SELECT},
                    s.name AS source_name
             FROM items_fts
             JOIN items i ON i.rowid = items_fts.rowid
@@ -493,8 +525,9 @@ async def list_items(
         items: list[KnowledgeItem] = []
         for row in rows:
             source_name = row[-1]
-            item_row = row[:-1]
-            items.append(_row_to_item(item_row, source_name=source_name))
+            user_tags = row[-2]
+            item_row = row[:-2]
+            items.append(_row_to_item(item_row, source_name=source_name, user_tags=user_tags))
         return items
 
     # Non-FTS path: existing source / status filters, no full-text
@@ -506,6 +539,9 @@ async def list_items(
     if status and status != "all":
         where.append("i.status = ?")
         args.append(status)
+    if tag:
+        where.append("EXISTS (SELECT 1 FROM item_tags WHERE item_id = i.id AND tag = ?)")
+        args.append(tag)
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
     sql = f"""
@@ -513,6 +549,7 @@ async def list_items(
                i.summary_zh, i.key_points_zh, i.tags_zh, i.author,
                i.published_at, i.fetched_at, i.distilled_at, i.status,
                i.content_type, i.duration_sec, i.metadata_json,
+               {_USER_TAGS_SELECT},
                s.name AS source_name
         FROM items i
         JOIN sources s ON s.id = i.source_id
@@ -527,21 +564,23 @@ async def list_items(
     rows = await cur.fetchall()
     items: list[KnowledgeItem] = []
     for row in rows:
-        # row has 18 fields when source_name join is included
+        # row = [17 item fields, user_tags, source_name]
         source_name = row[-1]
-        item_row = row[:-1]
-        items.append(_row_to_item(item_row, source_name=source_name))
+        user_tags = row[-2]
+        item_row = row[:-2]
+        items.append(_row_to_item(item_row, source_name=source_name, user_tags=user_tags))
     return items
 
 
 async def get_item(item_id: str) -> Optional[KnowledgeItem]:
     db = get_db()
     cur = await db.execute(
-        """
+        f"""
         SELECT i.id, i.source_id, i.url, i.title_en, i.title_zh, i.summary_en,
                i.summary_zh, i.key_points_zh, i.tags_zh, i.author,
                i.published_at, i.fetched_at, i.distilled_at, i.status,
                i.content_type, i.duration_sec, i.metadata_json,
+               {_USER_TAGS_SELECT},
                s.name AS source_name
         FROM items i
         JOIN sources s ON s.id = i.source_id
@@ -553,7 +592,8 @@ async def get_item(item_id: str) -> Optional[KnowledgeItem]:
     if not row:
         return None
     source_name = row[-1]
-    return _row_to_item(row[:-1], source_name=source_name)
+    user_tags = row[-2]
+    return _row_to_item(row[:-2], source_name=source_name, user_tags=user_tags)
 
 
 async def item_exists_by_url(url: str) -> bool:
@@ -646,6 +686,75 @@ async def update_item_status(item_id: str, status: ItemStatus) -> Optional[Knowl
     if cur.rowcount == 0:
         return None
     return await get_item(item_id)
+
+
+# ----- User tags (v0.5) ---------------------------------------------------
+
+_MAX_TAG_LEN = 50
+
+
+def normalize_tag(tag: str) -> str:
+    """Validate + normalize a user tag, or raise ValueError.
+
+    Trims whitespace, rejects empty / over-long, and rejects control chars
+    (which would corrupt the group_concat(tag, _TAG_SEP) round-trip used to
+    ship tags in item rows). Tag matching is case-sensitive as typed.
+    """
+    t = (tag or "").strip()
+    if not t:
+        raise ValueError("tag must not be empty")
+    if len(t) > _MAX_TAG_LEN:
+        raise ValueError(f"tag too long (max {_MAX_TAG_LEN} characters)")
+    if any(ord(c) < 0x20 for c in t):
+        raise ValueError("tag must not contain control characters")
+    return t
+
+
+async def add_item_tag(item_id: str, tag: str) -> Optional[KnowledgeItem]:
+    """Attach a user tag to an item. Idempotent. Returns the updated item,
+    or None if the item doesn't exist. Raises ValueError on an invalid tag.
+
+    User tags are not FTS-indexed (they're a filter dimension, not search
+    text), so no index maintenance here.
+    """
+    clean = normalize_tag(tag)
+    db = get_db()
+    cur = await db.execute("SELECT 1 FROM items WHERE id = ?", (item_id,))
+    if await cur.fetchone() is None:
+        return None
+    await db.execute(
+        "INSERT OR IGNORE INTO item_tags(item_id, tag) VALUES (?, ?)",
+        (item_id, clean),
+    )
+    await db.commit()
+    return await get_item(item_id)
+
+
+async def remove_item_tag(item_id: str, tag: str) -> Optional[KnowledgeItem]:
+    """Remove a user tag from an item. Idempotent (removing an absent tag is
+    a no-op). Returns the updated item, or None if the item doesn't exist.
+    """
+    db = get_db()
+    cur = await db.execute("SELECT 1 FROM items WHERE id = ?", (item_id,))
+    if await cur.fetchone() is None:
+        return None
+    await db.execute(
+        "DELETE FROM item_tags WHERE item_id = ? AND tag = ?",
+        (item_id, tag),
+    )
+    await db.commit()
+    return await get_item(item_id)
+
+
+async def list_user_tags() -> list[TagCount]:
+    """All user tags with their item counts, most-used first."""
+    db = get_db()
+    cur = await db.execute(
+        "SELECT tag, COUNT(*) AS n FROM item_tags "
+        "GROUP BY tag ORDER BY n DESC, tag ASC"
+    )
+    rows = await cur.fetchall()
+    return [TagCount(tag=r[0], count=int(r[1])) for r in rows]
 
 
 # ----- Sync jobs / history ------------------------------------------------

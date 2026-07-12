@@ -2,7 +2,7 @@
 
 > 公开 v1.0 之前的规划。v0.2c（多源补齐）**已收尾并在本机全量验证过**（2026-07-10）：Bilibili、YouTube、Podcast、arXiv、**X（bridge-RSS PoC）** 五路 fetcher + 错误重试/速率限制 + 优雅关闭 + Vite setApiKey 修复 + **Apply & Restart Sidecar 按钮**；**Playwright 前端 E2E 已跑绿**（Tauri-shell 层留待 WebdriverIO + `@wdio/tauri-service`；macOS 无原版 tauri-driver）。v0.3 已开工：**只读 MCP server（stdio）已落地**（`prism-mcp`，四工具，真实 stdio 冒烟过），见 v0.3 段。
 >
-> **实测结果**（不再是静态计数）：`uv run pytest` **305/305 绿**（v0.2c 254 + v0.3 MCP server 13）· `npm test` **36/36 绿**（v0.5 ⌘K 命令面板 +8）· `cargo test` **17/17 绿**（keystore 8 + llm_config 9）· `cargo check --all-targets` 干净 · `npm run build` 干净 · `npm run test:e2e` **7/7 绿**（命令面板 +2）。v0.2c 跑之前修掉了三个真实缺陷；随后又用真实 MiniMax key 跑通了 **distill 端到端**（2 条真实 LLM 调用 + FTS5 索引验证），另修两个附带问题。见下面「收尾验证」小节。
+> **实测结果**（不再是静态计数）：`uv run pytest` **323/323 绿**（v0.2c 254 + v0.3 MCP 51 + v0.5 标签 18）· `npm test` **42/42 绿**（v0.5 ⌘K 命令面板 +8 / 标签 +6）· `cargo test` **17/17 绿**（keystore 8 + llm_config 9）· `cargo check --all-targets` 干净 · `npm run build` 干净 · `npm run test:e2e` **7/7 绿**（命令面板 +2）。v0.2c 跑之前修掉了三个真实缺陷；随后又用真实 MiniMax key 跑通了 **distill 端到端**（2 条真实 LLM 调用 + FTS5 索引验证），另修两个附带问题。见下面「收尾验证」小节。
 
 ## 实际状态
 
@@ -206,7 +206,20 @@
   改成直接调 `lib/theme` 的全局 helper（DOM class + localStorage，同步、不依赖组件生命周期）。
   加了回归测试钉住这条。测试：vitest +8（含卸载后主题仍生效的回归）、Playwright e2e +2
   （⌘K 开→导航→Esc 关；换页后 FTS 搜条目并跳转）。本机浏览器实跑验证过主题/语言/导航三条动作。
-- [ ] 标签 / 收藏夹管理
+- [x] **标签 / 收藏夹管理**（2026-07-12）：**收藏（starred）其实早就有了**——DetailPanel 的
+  星标/归档按钮 + 收件箱「已收藏」筛选自 v0.2a 就在跑，`status` 是一维的。所以这片的真活是
+  **用户自定义标签**（distiller 自动出的 `tags_zh` 用户改不了）。后端：schema v5 新增
+  `item_tags(item_id, tag)` 表（纯新增，`items` ON DELETE CASCADE 连带清标签）；
+  `store` 加 `add/remove/list_user_tags`（带计数）+ 标签校验（去空白、拒控制字符/超 50 字）+
+  `list_items(tag=…)` 过滤（FTS 与非 FTS 两条路径都接）；`KnowledgeItem.user_tags` 用
+  相关子查询 `group_concat(tag, char(31))` 一次带出；路由 `POST/DELETE /api/items/{id}/tags`
+  + `GET /api/tags`。前端：DetailPanel「我的标签」区（加标签输入框 + 可删 chip）、收件箱筛选栏
+  新增「标签」区（列出标签 + 计数 + 点击筛选 + 「全部标签」清除）、store 加 `tagFilter`。
+  测试：pytest +18（store 幂等/级联/校验矩阵/tag 过滤含 FTS 路径 + api 200/400/404）、
+  vitest +6（DetailPanel 加/删/校验 + 收件箱标签栏筛选）。**本机接真实 sidecar 实跑验证**
+  （隔离 DB、真跑 30 条 RSS）：加标签→`GET /api/tags` 计数对、点标签把收件箱从 30 条筛到 2 条、
+  DetailPanel chip + 删除 × 都渲染正常。未加 Playwright e2e——mock-sidecar 不真过滤，真 sidecar
+  的实跑比 mock e2e 更有说服力。
 - [ ] 通知（重要源更新推送）
 - [ ] sqlite-vec 接入（语义搜索）
 

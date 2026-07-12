@@ -41,6 +41,7 @@ from prism_sidecar.models import (
     HealthInfo,
     ItemStatus,
     ItemStatusPatch,
+    ItemTagCreate,
     KnowledgeItem,
     Source,
     SourceCreate,
@@ -48,6 +49,7 @@ from prism_sidecar.models import (
     SyncJobStatus,
     SyncLogEntry,
     SyncResult,
+    TagCount,
 )
 from prism_sidecar.pipeline import orchestrator
 from prism_sidecar.pipeline.distill import list_pending_distill_ids, redistill_all_pending
@@ -240,11 +242,12 @@ async def list_items(
     source_id: str | None = None,
     status: str | None = None,
     q: str | None = None,
+    tag: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> list[KnowledgeItem]:
     return await store.list_items(
-        source_id=source_id, status=status, q=q, limit=limit, offset=offset,
+        source_id=source_id, status=status, q=q, tag=tag, limit=limit, offset=offset,
     )
 
 
@@ -270,6 +273,43 @@ async def patch_item_status(item_id: str, payload: ItemStatusPatch) -> Knowledge
     `archived` were permanently empty.
     """
     updated = await store.update_item_status(item_id, payload.status)
+    if not updated:
+        raise HTTPException(404, f"item {item_id} not found")
+    return updated
+
+
+# ---- Tags (v0.5) ---------------------------------------------------------
+
+@app.get("/api/tags", response_model=list[TagCount], response_model_by_alias=True)
+async def list_tags() -> list[TagCount]:
+    """Every user tag with its item count — powers the inbox tag filter."""
+    return await store.list_user_tags()
+
+
+@app.post(
+    "/api/items/{item_id}/tags",
+    response_model=KnowledgeItem,
+    response_model_by_alias=True,
+)
+async def add_item_tag(item_id: str, payload: ItemTagCreate) -> KnowledgeItem:
+    """Attach a user tag to an item. Idempotent; 400 on an invalid tag."""
+    try:
+        updated = await store.add_item_tag(item_id, payload.tag)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not updated:
+        raise HTTPException(404, f"item {item_id} not found")
+    return updated
+
+
+@app.delete(
+    "/api/items/{item_id}/tags/{tag}",
+    response_model=KnowledgeItem,
+    response_model_by_alias=True,
+)
+async def remove_item_tag(item_id: str, tag: str) -> KnowledgeItem:
+    """Remove a user tag from an item. Idempotent."""
+    updated = await store.remove_item_tag(item_id, tag)
     if not updated:
         raise HTTPException(404, f"item {item_id} not found")
     return updated

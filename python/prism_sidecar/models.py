@@ -170,6 +170,10 @@ class KnowledgeItem(_CamelBase):
     key_points_zh: list[str] = Field(default_factory=list)
     tags_zh: list[str] = Field(default_factory=list)
 
+    # v0.5: user-applied tags (manual curation), distinct from the auto
+    # `tags_zh` above. Empty until the user tags the item.
+    user_tags: list[str] = Field(default_factory=list)
+
     # Compat shims — populated by the model validator
     title: str = ""
     summary: Optional[str] = None
@@ -217,6 +221,19 @@ class KnowledgeItem(_CamelBase):
 
 class ItemStatusPatch(BaseModel):
     status: ItemStatus
+
+
+class ItemTagCreate(_CamelBase):
+    """POST /api/items/{id}/tags — add one user tag to an item."""
+
+    tag: str
+
+
+class TagCount(_CamelBase):
+    """GET /api/tags — a user tag and how many items carry it."""
+
+    tag: str
+    count: int
 
 
 # ----- Sync ----------------------------------------------------------------

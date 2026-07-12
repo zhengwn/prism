@@ -60,6 +60,8 @@ export function InboxPage() {
   const setSelectedItem = usePrismStore((s) => s.setSelectedItem);
   const statusFilter = usePrismStore((s) => s.statusFilter);
   const setStatusFilter = usePrismStore((s) => s.setStatusFilter);
+  const tagFilter = usePrismStore((s) => s.tagFilter);
+  const setTagFilter = usePrismStore((s) => s.setTagFilter);
   const { t, language } = useLanguage();
   const preferEn = language === "en";
 
@@ -70,18 +72,27 @@ export function InboxPage() {
   // filter refetches the *filtered* set from the sidecar instead of
   // re-slicing whatever happened to already be in memory.
   const { data: items, isLoading } = useQuery({
-    queryKey: ["items", { q: debouncedQuery, sourceId: selectedSourceId, status: statusFilter }],
+    queryKey: ["items", { q: debouncedQuery, sourceId: selectedSourceId, status: statusFilter, tag: tagFilter }],
     queryFn: () =>
       api.listItems({
         q: debouncedQuery || undefined,
         sourceId: selectedSourceId ?? undefined,
         status: statusFilter,
+        tag: tagFilter ?? undefined,
       }),
   });
 
   const { data: sources } = useQuery({
     queryKey: ["sources"],
     queryFn: () => api.listSources(),
+  });
+
+  // User tags, for the filter rail. Kept fresh on the same cache key that
+  // DetailPanel invalidates after add/remove, so the list + counts update
+  // as soon as the user tags something.
+  const { data: tags } = useQuery({
+    queryKey: ["tags"],
+    queryFn: () => api.listTags(),
   });
 
   // Sync button state. `idle` is the default. While a sync is running we
@@ -256,6 +267,41 @@ export function InboxPage() {
             </Button>
           ))}
         </div>
+
+        {/* User tags — only shown once the user has tagged something. */}
+        {tags && tags.length > 0 && (
+          <>
+            <h3 className="mt-4 mb-2 px-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              {t("inbox.tags")}
+            </h3>
+            <div className="space-y-1">
+              {tagFilter !== null && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="w-full justify-start text-muted-foreground"
+                  onClick={() => setTagFilter(null)}
+                  data-testid="clear-tag-filter"
+                >
+                  {t("inbox.clearTagFilter")}
+                </Button>
+              )}
+              {tags.map((tg) => (
+                <Button
+                  key={tg.tag}
+                  variant={tagFilter === tg.tag ? "secondary" : "ghost"}
+                  size="sm"
+                  className="w-full justify-between"
+                  onClick={() => setTagFilter(tagFilter === tg.tag ? null : tg.tag)}
+                  data-testid={`tag-filter-${tg.tag}`}
+                >
+                  <span className="truncate">#{tg.tag}</span>
+                  <span className="text-[10px] text-muted-foreground">{tg.count}</span>
+                </Button>
+              ))}
+            </div>
+          </>
+        )}
       </div>
 
       {/* Items list */}

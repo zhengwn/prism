@@ -37,7 +37,12 @@ PRISM_DATA_DIR = _config.PRISM_DATA_DIR
 #     per-char segmentation + phrase queries fixes Chinese substring
 #     search. Index maintenance for INSERT/UPDATE moves into store.py
 #     (SQL triggers can't segment); only the DELETE trigger remains.
-SCHEMA_VERSION = 4
+# v4: add `webhooks` table (external-agent callbacks). Pure additive.
+# v5 (v0.5): add `item_tags` table — user-applied tags, distinct from the
+#     distiller's auto `items.tags_zh`. Pure additive (CREATE TABLE IF NOT
+#     EXISTS in SCHEMA_SQL is idempotent on every init, like webhooks was),
+#     so no dedicated migration step is needed — only the version bump.
+SCHEMA_VERSION = 5
 
 
 SCHEMA_SQL = """
@@ -128,6 +133,18 @@ CREATE TABLE IF NOT EXISTS webhooks (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_webhooks_enabled ON webhooks(enabled);
+
+-- v5 (v0.5): user-applied tags. Distinct from the distiller's auto
+-- `items.tags_zh` (which stays as-is and remains FTS-searchable). One row
+-- per (item, tag); ON DELETE CASCADE drops an item's tags when it's removed.
+CREATE TABLE IF NOT EXISTS item_tags (
+    item_id TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (item_id, tag),
+    FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_item_tags_tag ON item_tags(tag);
 """
 
 

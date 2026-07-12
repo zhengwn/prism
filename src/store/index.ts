@@ -16,6 +16,9 @@ interface PrismState {
   // Filters
   searchQuery: string;
   statusFilter: "all" | "unread" | "starred" | "archived";
+  // v0.5: filter the inbox to items carrying this user tag. null = no tag
+  // filter. Independent of the source filter (both narrow the same list).
+  tagFilter: string | null;
 
   // Command palette (⌘K) — a global overlay, so its open state lives here
   // rather than in one page: the shortcut listener, the TopBar affordance,
@@ -27,6 +30,7 @@ interface PrismState {
   setSelectedItem: (id: string | null) => void;
   setSearchQuery: (q: string) => void;
   setStatusFilter: (s: PrismState["statusFilter"]) => void;
+  setTagFilter: (tag: string | null) => void;
   setCommandPaletteOpen: (open: boolean) => void;
 }
 
@@ -35,11 +39,13 @@ export const usePrismStore = create<PrismState>((set) => ({
   selectedItemId: null,
   searchQuery: "",
   statusFilter: "all",
+  tagFilter: null,
   commandPaletteOpen: false,
 
   setSelectedSource: (id) => set({ selectedSourceId: id, selectedItemId: null }),
   setSelectedItem: (id) => set({ selectedItemId: id }),
   setSearchQuery: (q) => set({ searchQuery: q }),
   setStatusFilter: (s) => set({ statusFilter: s }),
+  setTagFilter: (tag) => set({ tagFilter: tag }),
   setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
 }));

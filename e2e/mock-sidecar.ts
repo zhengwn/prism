@@ -168,6 +168,9 @@ export async function installSidecarMock(page: Page): Promise<void> {
   // Items list (with or without query string).
   await page.route(`${SIDECAR}/api/items**`, (r) => json(r, ITEMS));
 
+  // Tags — empty by default (the inbox rail hides its Tags section).
+  await page.route(`${SIDECAR}/api/tags`, (r) => json(r, []));
+
   // Sync: return a terminal `done` job so the inbox poll loop exits at once.
   await page.route(`${SIDECAR}/api/sync`, (r) =>
     json(r, {

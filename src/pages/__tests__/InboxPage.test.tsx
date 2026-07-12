@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { InboxPage } from "../InboxPage";
+import { usePrismStore } from "@/store";
 import * as api from "@/lib/api";
 import type { KnowledgeItem, Source, SyncResult } from "@/types";
 
@@ -14,6 +15,7 @@ vi.mock("@/lib/api", () => ({
   api: {
     listItems: vi.fn(),
     listSources: vi.fn(),
+    listTags: vi.fn(),
     syncAll: vi.fn(),
     // v0.2b: the page polls getSyncStatus to know when a fire-and-
     // forget sync finishes. Default mock: returns a job that's
@@ -85,6 +87,8 @@ describe("InboxPage — Sync now button", () => {
     vi.clearAllMocks();
     vi.mocked(api.api.listItems).mockResolvedValue(FAKE_ITEMS);
     vi.mocked(api.api.listSources).mockResolvedValue(FAKE_SOURCES);
+    vi.mocked(api.api.listTags).mockResolvedValue([]);
+    usePrismStore.setState({ selectedSourceId: null, tagFilter: null, statusFilter: "all" });
   });
 
   afterEach(() => {
@@ -162,5 +166,55 @@ describe("InboxPage — Sync now button", () => {
       expect(btn).toHaveAttribute("data-sync-state", "success");
     });
     expect(btn).not.toBeDisabled();
+  });
+});
+
+describe("InboxPage — tag filter rail", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.api.listItems).mockResolvedValue(FAKE_ITEMS);
+    vi.mocked(api.api.listSources).mockResolvedValue(FAKE_SOURCES);
+    vi.mocked(api.api.getDistillStatus).mockResolvedValue({
+      isRunning: false, pending: 0, distilled: 0, failed: 0,
+      currentTitle: null, currentSource: null, startedAt: null,
+      finishedAt: null, lastEventAt: 0, lastError: null,
+    });
+    usePrismStore.setState({ selectedSourceId: null, tagFilter: null, statusFilter: "all" });
+  });
+
+  it("renders user tags and filters items by tag on click", async () => {
+    vi.mocked(api.api.listTags).mockResolvedValue([
+      { tag: "读过", count: 3 },
+      { tag: "重要", count: 1 },
+    ]);
+
+    renderWithQuery(<InboxPage />);
+
+    const tagBtn = await screen.findByTestId("tag-filter-读过");
+    expect(tagBtn).toBeInTheDocument();
+
+    fireEvent.click(tagBtn);
+
+    // The click sets the store filter and refetches with the tag param.
+    await waitFor(() => {
+      expect(usePrismStore.getState().tagFilter).toBe("读过");
+    });
+    await waitFor(() => {
+      expect(api.api.listItems).toHaveBeenCalledWith(
+        expect.objectContaining({ tag: "读过" }),
+      );
+    });
+
+    // Clicking the same tag again clears the filter.
+    fireEvent.click(await screen.findByTestId("tag-filter-读过"));
+    await waitFor(() => expect(usePrismStore.getState().tagFilter).toBeNull());
+  });
+
+  it("hides the tag section when there are no user tags", async () => {
+    vi.mocked(api.api.listTags).mockResolvedValue([]);
+    renderWithQuery(<InboxPage />);
+    // Wait for the page to mount, then assert no tag buttons rendered.
+    await screen.findByTestId("sync-now-button");
+    expect(screen.queryByTestId("tag-filter-读过")).toBeNull();
   });
 });

@@ -68,6 +68,30 @@ export function DetailPanel() {
     },
   });
 
+  // v0.5: user-tag add/remove. Both invalidate the item (to refresh its
+  // chips), the item list (a tag filter may now include/exclude it), and
+  // the tag list (the inbox rail's counts).
+  const [tagInput, setTagInput] = useState("");
+  const invalidateTags = () => {
+    qc.invalidateQueries({ queryKey: ["item", selectedItemId] });
+    qc.invalidateQueries({ queryKey: ["items"] });
+    qc.invalidateQueries({ queryKey: ["tags"] });
+  };
+  const addTagMut = useMutation({
+    mutationFn: ({ id, tag }: { id: string; tag: string }) => api.addItemTag(id, tag),
+    onSuccess: invalidateTags,
+  });
+  const removeTagMut = useMutation({
+    mutationFn: ({ id, tag }: { id: string; tag: string }) => api.removeItemTag(id, tag),
+    onSuccess: invalidateTags,
+  });
+  const submitTag = (id: string) => {
+    const tag = tagInput.trim();
+    if (!tag) return;
+    addTagMut.mutate({ id, tag });
+    setTagInput("");
+  };
+
   // Opening an unread item marks it read — this is what makes the
   // inbox's "unread" filter mean something. Starred/archived items
   // are left alone (those are explicit user choices).
@@ -340,6 +364,51 @@ export function DetailPanel() {
                   </div>
                 </section>
               )}
+
+              {/* User tags — editable, distinct from the auto tags above.
+                  Always shown (even with zero tags) so the add affordance
+                  is available. */}
+              <section data-testid="user-tags">
+                <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  {t("detail.myTags")}
+                </h3>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {(item.userTags ?? []).map((tag) => (
+                    <Badge
+                      key={tag}
+                      variant="outline"
+                      className="gap-1 px-1.5 py-0.5 text-[10px] font-normal"
+                      data-testid={`user-tag-${tag}`}
+                    >
+                      #{tag}
+                      <button
+                        type="button"
+                        aria-label={t("detail.removeTag", { tag })}
+                        title={t("detail.removeTag", { tag })}
+                        disabled={removeTagMut.isPending}
+                        onClick={() => removeTagMut.mutate({ id: item.id, tag })}
+                        className="rounded-sm text-muted-foreground hover:text-destructive"
+                      >
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    </Badge>
+                  ))}
+                  <input
+                    value={tagInput}
+                    onChange={(e) => setTagInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        submitTag(item.id);
+                      }
+                    }}
+                    placeholder={t("detail.addTagPlaceholder")}
+                    maxLength={50}
+                    data-testid="add-tag-input"
+                    className="h-6 min-w-[6rem] flex-1 rounded border border-input bg-background px-1.5 text-[11px] placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  />
+                </div>
+              </section>
 
               {/* Pending-distillation hint */}
               {!item.distilledAt && (

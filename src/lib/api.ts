@@ -26,6 +26,7 @@ import type {
   Source,
   SyncLogEntry,
   SyncResult,
+  TagCount,
 } from "@/types";
 
 const SIDECAR_BASE = import.meta.env.VITE_PRISM_SIDECAR_URL ?? "http://127.0.0.1:8765";
@@ -110,6 +111,7 @@ export const api = {
     sourceId?: string;
     status?: string;
     q?: string;
+    tag?: string;
     limit?: number;
     offset?: number;
   }) => {
@@ -117,6 +119,7 @@ export const api = {
     if (params?.sourceId) search.set("source_id", params.sourceId);
     if (params?.status && params.status !== "all") search.set("status", params.status);
     if (params?.q) search.set("q", params.q);
+    if (params?.tag) search.set("tag", params.tag);
     search.set("limit", String(params?.limit ?? 200));
     if (params?.offset) search.set("offset", String(params.offset));
     const qs = search.toString();
@@ -132,6 +135,22 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ status }),
     }),
+
+  // ----- User tags (v0.5) -----
+  /** GET /api/tags — every user tag with its item count. */
+  listTags: () => request<TagCount[]>("/api/tags"),
+  /** POST /api/items/{id}/tags — attach a user tag (idempotent). */
+  addItemTag: (id: string, tag: string) =>
+    request<KnowledgeItem>(`/api/items/${id}/tags`, {
+      method: "POST",
+      body: JSON.stringify({ tag }),
+    }),
+  /** DELETE /api/items/{id}/tags/{tag} — remove a user tag (idempotent). */
+  removeItemTag: (id: string, tag: string) =>
+    request<KnowledgeItem>(
+      `/api/items/${id}/tags/${encodeURIComponent(tag)}`,
+      { method: "DELETE" },
+    ),
 
   // ----- Sync -----
   /**

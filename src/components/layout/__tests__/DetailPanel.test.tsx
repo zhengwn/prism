@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DetailPanel } from "../DetailPanel";
 import { usePrismStore } from "@/store";
@@ -10,6 +10,8 @@ vi.mock("@/lib/api", () => ({
   api: {
     getItem: vi.fn(),
     updateItemStatus: vi.fn(),
+    addItemTag: vi.fn(),
+    removeItemTag: vi.fn(),
   },
   SIDECAR_BASE: "http://127.0.0.1:8765",
   PrismAPIError: class PrismAPIError extends Error {
@@ -128,5 +130,62 @@ describe("DetailPanel — Bilibili item", () => {
     });
     expect(screen.queryByTestId("detail-bilibili-player")).toBeNull();
     expect(screen.queryByTestId("detail-open-bilibili")).toBeNull();
+  });
+});
+
+describe("DetailPanel — user tags", () => {
+  const TAGGED: KnowledgeItem = {
+    ...FAKE_BILI_ITEM,
+    id: "it-tagged",
+    url: "https://example.com/post",
+    metadataJson: {},
+    userTags: ["读过"],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.api.updateItemStatus).mockImplementation(
+      async (_id: string, status) => ({ ...TAGGED, status }),
+    );
+    vi.mocked(api.api.getItem).mockResolvedValue(TAGGED);
+    vi.mocked(api.api.addItemTag).mockResolvedValue({ ...TAGGED, userTags: ["读过", "新"] });
+    vi.mocked(api.api.removeItemTag).mockResolvedValue({ ...TAGGED, userTags: [] });
+    usePrismStore.setState({ selectedItemId: TAGGED.id });
+  });
+
+  it("renders existing user tags as chips", async () => {
+    renderWithQuery(<DetailPanel />);
+    expect(await screen.findByTestId("user-tag-读过")).toBeInTheDocument();
+  });
+
+  it("adds a tag on Enter and clears the input", async () => {
+    renderWithQuery(<DetailPanel />);
+    const input = (await screen.findByTestId("add-tag-input")) as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: "  新  " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() =>
+      // trimmed before sending
+      expect(api.api.addItemTag).toHaveBeenCalledWith(TAGGED.id, "新"),
+    );
+    expect(input.value).toBe("");
+  });
+
+  it("does not submit an empty/whitespace tag", async () => {
+    renderWithQuery(<DetailPanel />);
+    const input = await screen.findByTestId("add-tag-input");
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(api.api.addItemTag).not.toHaveBeenCalled();
+  });
+
+  it("removes a tag when its × is clicked", async () => {
+    renderWithQuery(<DetailPanel />);
+    const chip = await screen.findByTestId("user-tag-读过");
+    fireEvent.click(chip.querySelector("button")!);
+    await waitFor(() =>
+      expect(api.api.removeItemTag).toHaveBeenCalledWith(TAGGED.id, "读过"),
+    );
   });
 });

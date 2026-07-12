@@ -52,6 +52,12 @@ export interface KnowledgeItem {
   summary?: string;
   keyPoints?: string[];
   tags?: string[];
+  /**
+   * v0.5: user-applied tags (manual curation), distinct from the
+   * distiller's auto `tagsZh` above. Editable from the DetailPanel;
+   * the inbox can filter by one of these.
+   */
+  userTags?: string[];
   // Status / meta
   author?: string;
   publishedAt: string;
@@ -71,6 +77,12 @@ export interface KnowledgeItem {
    * RSS items carry `feed_kind`, etc.
    */
   metadataJson?: Record<string, unknown>;
+}
+
+/** GET /api/tags — a user tag and how many items carry it. */
+export interface TagCount {
+  tag: string;
+  count: number;
 }
 
 export interface PrismHealth {
