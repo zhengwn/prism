@@ -179,6 +179,50 @@ _V3_DELETE_TRIGGER_DDL = (
 
 _db: aiosqlite.Connection | None = None
 
+# v0.5: whether the sqlite-vec extension loaded and the `items_vec` vector
+# table is usable. Best-effort — if the extension can't load (e.g. a
+# sqlite3 build with extension loading disabled, or the frozen binary
+# without the bundled .dylib), semantic search is simply off and the app
+# runs on FTS5. Read via `vec_available()`.
+_vec_available: bool = False
+
+
+def vec_available() -> bool:
+    """True when the sqlite-vec `items_vec` table is loaded and usable."""
+    return _vec_available
+
+
+async def _init_vec(db: aiosqlite.Connection) -> None:
+    """Load sqlite-vec and create the `items_vec` vector table (best-effort).
+
+    The table is a vec0 virtual table keyed by item_id, one row per
+    embedded item. It is NOT part of SCHEMA_SQL because it depends on the
+    extension being loaded first, and creating it is idempotent
+    (IF NOT EXISTS), so it's rebuildable without a schema-version bump.
+    """
+    global _vec_available
+    try:
+        import sqlite_vec  # noqa: PLC0415 — optional, only needed here
+        from prism_sidecar.embeddings import EMBED_DIM
+
+        await db.enable_load_extension(True)
+        await db.load_extension(sqlite_vec.loadable_path())
+        await db.enable_load_extension(False)
+        await db.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS items_vec USING vec0("
+            f"item_id TEXT PRIMARY KEY, embedding FLOAT[{EMBED_DIM}])"
+        )
+        await db.commit()
+        _vec_available = True
+        log.info("[prism-sidecar] sqlite-vec loaded; semantic search enabled")
+    except Exception as e:  # pragma: no cover - env-dependent
+        _vec_available = False
+        log.warning(
+            "[prism-sidecar] sqlite-vec unavailable (%s); semantic search off, "
+            "falling back to FTS5",
+            e,
+        )
+
 
 def _ensure_data_dir() -> None:
     """Create the data directory if it doesn't exist."""
@@ -287,6 +331,9 @@ async def init_db(db_path: Path | None = None) -> aiosqlite.Connection:
     await db.execute("PRAGMA busy_timeout = 5000")
 
     await _run_migrations(db)
+    # v0.5: optional vector index for semantic search. Best-effort — never
+    # blocks startup; sets vec_available() accordingly.
+    await _init_vec(db)
 
     _db = db
     log.info("[prism-sidecar] db initialized at %s", target)
@@ -329,4 +376,5 @@ __all__ = [
     "close_db",
     "get_db",
     "db_session",
+    "vec_available",
 ]

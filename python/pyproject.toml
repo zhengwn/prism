@@ -17,6 +17,7 @@ dependencies = [
     "bilibili-api-python>=17.4.1",
     "yt-dlp>=2025.6.9",
     "mcp>=1.28,<2",
+    "sqlite-vec>=0.1.9",
 ]
 
 [project.scripts]

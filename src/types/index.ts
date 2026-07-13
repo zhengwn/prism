@@ -85,6 +85,20 @@ export interface TagCount {
   count: number;
 }
 
+/**
+ * GET /api/search/status — whether semantic search is usable and how much
+ * is indexed. `available` is the AND of a MiniMax key being configured
+ * (`embeddingsConfigured`) and the sqlite-vec extension having loaded
+ * (`vecAvailable`). `pending` is distilled items not yet embedded.
+ */
+export interface SearchStatus {
+  available: boolean;
+  embeddingsConfigured: boolean;
+  vecAvailable: boolean;
+  indexed: number;
+  pending: number;
+}
+
 export interface PrismHealth {
   ok: boolean;
   version: string;

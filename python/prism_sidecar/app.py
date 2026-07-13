@@ -25,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from prism_sidecar import __version__, scheduler, settings, store
+from prism_sidecar import __version__, scheduler, search, settings, store
 from prism_sidecar.progress import progress_store
 from prism_sidecar.config import (
     DAILY_SYNC_ENABLED,
@@ -313,6 +313,36 @@ async def remove_item_tag(item_id: str, tag: str) -> KnowledgeItem:
     if not updated:
         raise HTTPException(404, f"item {item_id} not found")
     return updated
+
+
+# ---- Semantic search (v0.5) ----------------------------------------------
+
+@app.get("/api/search/status")
+async def search_status() -> dict:
+    """Whether semantic search is available + how much is indexed/pending."""
+    return await search.search_status()
+
+
+@app.post("/api/search/reindex")
+async def search_reindex(batch_limit: int | None = Query(None, ge=1, le=1000)) -> dict:
+    """Embed every distilled item missing a vector (best-effort, idempotent)."""
+    return await search.reindex_missing(batch_limit=batch_limit)
+
+
+@app.get(
+    "/api/search/semantic",
+    response_model=list[KnowledgeItem],
+    response_model_by_alias=True,
+)
+async def search_semantic(
+    q: str,
+    limit: int = Query(30, ge=1, le=200),
+    source_id: str | None = None,
+    status: str | None = None,
+) -> list[KnowledgeItem]:
+    """Nearest items to the query by embedding similarity. Empty when
+    semantic search is unavailable — the client falls back to FTS."""
+    return await search.semantic_search(q, limit=limit, source_id=source_id, status=status)
 
 
 # ---- Sync ----------------------------------------------------------------

@@ -265,6 +265,10 @@ async def run_source_sync(source: Source, distiller: Distiller | None = None) ->
                 try:
                     distilled: DistilledItem = await distiller.distill(raw)
                     await update_item_distilled(item_id, distilled)
+                    # Best-effort semantic-index update (no-op when
+                    # embeddings / sqlite-vec aren't available).
+                    from prism_sidecar import search
+                    await search.embed_item(item_id)
                     stats.distilled += 1
                     await progress_store.item_succeeded()
                 except DistillerNotConfigured:

@@ -2,7 +2,7 @@
 
 > 公开 v1.0 之前的规划。v0.2c（多源补齐）**已收尾并在本机全量验证过**（2026-07-10）：Bilibili、YouTube、Podcast、arXiv、**X（bridge-RSS PoC）** 五路 fetcher + 错误重试/速率限制 + 优雅关闭 + Vite setApiKey 修复 + **Apply & Restart Sidecar 按钮**；**Playwright 前端 E2E 已跑绿**（Tauri-shell 层留待 WebdriverIO + `@wdio/tauri-service`；macOS 无原版 tauri-driver）。v0.3 已开工：**只读 MCP server（stdio）已落地**（`prism-mcp`，四工具，真实 stdio 冒烟过），见 v0.3 段。
 >
-> **实测结果**（不再是静态计数）：`uv run pytest` **323/323 绿**（v0.2c 254 + v0.3 MCP 51 + v0.5 标签 18）· `npm test` **42/42 绿**（v0.5 ⌘K 命令面板 +8 / 标签 +6）· `cargo test` **17/17 绿**（keystore 8 + llm_config 9）· `cargo check --all-targets` 干净 · `npm run build` 干净 · `npm run test:e2e` **7/7 绿**（命令面板 +2）。v0.2c 跑之前修掉了三个真实缺陷；随后又用真实 MiniMax key 跑通了 **distill 端到端**（2 条真实 LLM 调用 + FTS5 索引验证），另修两个附带问题。见下面「收尾验证」小节。
+> **实测结果**（不再是静态计数）：`uv run pytest` **331/331 绿**（v0.2c 254 + v0.3 MCP 51 + v0.5 标签 18 + 语义搜索 8）· `npm test` **46/46 绿**（v0.5 ⌘K 命令面板 +8 / 标签 +6 / 语义搜索 +4）· `cargo test` **17/17 绿**（keystore 8 + llm_config 9）· `cargo check --all-targets` 干净 · `npm run build` 干净 · `npm run test:e2e` **7/7 绿**（命令面板 +2）。v0.2c 跑之前修掉了三个真实缺陷；随后又用真实 MiniMax key 跑通了 **distill 端到端**（2 条真实 LLM 调用 + FTS5 索引验证），另修两个附带问题。见下面「收尾验证」小节。
 
 ## 实际状态
 
@@ -189,6 +189,10 @@
   `externalBin` + `resolve_bundled_sidecar` 的 `.exe` 分支已就绪,只差在 Windows 上跑冻结 + 打包
 - [ ] **MCP server 打包**：`prism-mcp` 本切片未冻结(agent/power-user 路径);后续可加第二个
   externalBin 或给冻结二进制加子命令
+- [ ] **冻结包内的 sqlite-vec**(v0.5 带出):语义搜索靠 sqlite-vec 的可加载扩展(.dylib/.so/.dll)。
+  PyInstaller 不会自动打包它——冻结时需 `--add-binary $(python -c 'import sqlite_vec;print(sqlite_vec.loadable_path())')`。
+  没打进去时 `vec_available()=False`、语义搜索自动关闭、回落 FTS(已做尽力加载),所以**不阻断**冻结包运行,
+  但打包时要补这条才能在分发版里用上语义搜索
 - [ ] **自动更新（tauri-plugin-updater）**：需托管 release 端点 + 更新签名密钥对
 
 ## v0.5 — UX 完善（进行中）
@@ -220,8 +224,28 @@
   （隔离 DB、真跑 30 条 RSS）：加标签→`GET /api/tags` 计数对、点标签把收件箱从 30 条筛到 2 条、
   DetailPanel chip + 删除 × 都渲染正常。未加 Playwright e2e——mock-sidecar 不真过滤，真 sidecar
   的实跑比 mock e2e 更有说服力。
+- [x] **sqlite-vec 接入（语义搜索）**（2026-07-13）：用 **MiniMax embeddings（embo-01，1536 维）**
+  给蒸馏后的条目做向量索引，收件箱可切「关键词（FTS5）↔ 语义（KNN）」两种搜索。
+  **选型前先探清了两个真实风险**：① sqlite-vec 是可加载扩展——本机 sqlite3 允许
+  `enable_load_extension`，aiosqlite 也能 `load_extension` + 跑 vec0 KNN（都实测过）；
+  ② MiniMax embeddings **不是 OpenAI 兼容**（litellm 无 handler），实测其 API 是
+  `{model, texts, type}` → `{vectors, base_resp}`，`type` 区分 db/query 两种投影（非对称检索），
+  所以直接 httpx 调，不走 litellm。后端：`embeddings.py`（embo-01 客户端 + 可用性判断）、
+  `db.py` 启动时**尽力加载** sqlite-vec（加载失败 → `vec_available()=False`、语义搜索关闭、
+  照常跑 FTS，绝不阻塞启动）+ 建 `items_vec` vec0 表、`store.py`（`upsert_item_vector` /
+  `semantic_search` KNN 关联 items+user_tags+过滤 / `items_missing_vectors`）、`search.py`
+  编排（`reindex_missing` 批量补索引 + `embed_item` 蒸馏后自动索引 + `semantic_search`）、
+  路由 `GET /api/search/status`、`POST /api/search/reindex`、`GET /api/search/semantic`。
+  蒸馏成功后**顺手自动嵌入**（best-effort，无 key/无 vec 时静默跳过），存量条目走 reindex 补。
+  前端：收件箱筛选栏「搜索」区加关键词/语义切换（仅在可用时出现）+ 待索引数量的 reindex 按钮，
+  store 加 `searchMode`，语义模式 + 有 query 时走 `/api/search/semantic`，否则回落 FTS。
+  测试：pytest +8（fake embedder + **真 sqlite-vec** vec0 KNN：reindex/排序/过滤/不可用降级 + api）、
+  vitest +4（切换显隐/reindex/语义 vs 关键词路由）。**本机接真实 MiniMax key 实跑**（隔离 DB）：
+  ① 直接嵌入 8 条不同主题、4/4 主题查询都把预期条目排第一（「大模型…」→ 大语言模型，
+  「汽车与芯片」→ 自动驾驶芯片，语义质量过关）；② 起真 sidecar + 浏览器：语义切换出现、
+  切到语义搜「语言模型和自然语言」→ 大语言模型条目排第一（与日期序不同，确认语义排序真生效），
+  network 确认命中 `/api/search/semantic 200`。
 - [ ] 通知（重要源更新推送）
-- [ ] sqlite-vec 接入（语义搜索）
 
 ## v1.0 — 公开发布
 

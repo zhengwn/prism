@@ -171,6 +171,11 @@ export async function installSidecarMock(page: Page): Promise<void> {
   // Tags — empty by default (the inbox rail hides its Tags section).
   await page.route(`${SIDECAR}/api/tags`, (r) => json(r, []));
 
+  // Semantic search — unavailable by default (the mode toggle stays hidden).
+  await page.route(`${SIDECAR}/api/search/status`, (r) =>
+    json(r, { available: false, embeddingsConfigured: false, vecAvailable: false, indexed: 0, pending: 0 }),
+  );
+
   // Sync: return a terminal `done` job so the inbox poll loop exits at once.
   await page.route(`${SIDECAR}/api/sync`, (r) =>
     json(r, {

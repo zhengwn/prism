@@ -163,6 +163,10 @@ async def redistill_all_pending(
 
         try:
             await update_item_distilled(item.id, distilled)
+            # Keep the semantic index fresh (best-effort; no-op when the
+            # MiniMax key / sqlite-vec aren't available).
+            from prism_sidecar import search
+            await search.embed_item(item.id)
             result.distilled += 1
             await progress_store.item_succeeded()
         except Exception as exc:  # noqa: BLE001

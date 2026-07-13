@@ -16,6 +16,9 @@ vi.mock("@/lib/api", () => ({
     listItems: vi.fn(),
     listSources: vi.fn(),
     listTags: vi.fn(),
+    searchStatus: vi.fn(),
+    semanticSearch: vi.fn(),
+    reindexSemantic: vi.fn(),
     syncAll: vi.fn(),
     // v0.2b: the page polls getSyncStatus to know when a fire-and-
     // forget sync finishes. Default mock: returns a job that's
@@ -88,7 +91,10 @@ describe("InboxPage — Sync now button", () => {
     vi.mocked(api.api.listItems).mockResolvedValue(FAKE_ITEMS);
     vi.mocked(api.api.listSources).mockResolvedValue(FAKE_SOURCES);
     vi.mocked(api.api.listTags).mockResolvedValue([]);
-    usePrismStore.setState({ selectedSourceId: null, tagFilter: null, statusFilter: "all" });
+    vi.mocked(api.api.searchStatus).mockResolvedValue({
+      available: false, embeddingsConfigured: false, vecAvailable: true, indexed: 0, pending: 0,
+    });
+    usePrismStore.setState({ selectedSourceId: null, tagFilter: null, statusFilter: "all", searchMode: "keyword" });
   });
 
   afterEach(() => {
@@ -179,7 +185,10 @@ describe("InboxPage — tag filter rail", () => {
       currentTitle: null, currentSource: null, startedAt: null,
       finishedAt: null, lastEventAt: 0, lastError: null,
     });
-    usePrismStore.setState({ selectedSourceId: null, tagFilter: null, statusFilter: "all" });
+    vi.mocked(api.api.searchStatus).mockResolvedValue({
+      available: false, embeddingsConfigured: false, vecAvailable: true, indexed: 0, pending: 0,
+    });
+    usePrismStore.setState({ selectedSourceId: null, tagFilter: null, statusFilter: "all", searchMode: "keyword" });
   });
 
   it("renders user tags and filters items by tag on click", async () => {
@@ -216,5 +225,70 @@ describe("InboxPage — tag filter rail", () => {
     // Wait for the page to mount, then assert no tag buttons rendered.
     await screen.findByTestId("sync-now-button");
     expect(screen.queryByTestId("tag-filter-读过")).toBeNull();
+  });
+});
+
+describe("InboxPage — semantic search", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.api.listItems).mockResolvedValue(FAKE_ITEMS);
+    vi.mocked(api.api.semanticSearch).mockResolvedValue(FAKE_ITEMS);
+    vi.mocked(api.api.listSources).mockResolvedValue(FAKE_SOURCES);
+    vi.mocked(api.api.listTags).mockResolvedValue([]);
+    vi.mocked(api.api.reindexSemantic).mockResolvedValue({ available: true, indexed: 2, failed: 0, remaining: 0 });
+    vi.mocked(api.api.getDistillStatus).mockResolvedValue({
+      isRunning: false, pending: 0, distilled: 0, failed: 0,
+      currentTitle: null, currentSource: null, startedAt: null,
+      finishedAt: null, lastEventAt: 0, lastError: null,
+    });
+    usePrismStore.setState({ selectedSourceId: null, tagFilter: null, statusFilter: "all", searchMode: "keyword", searchQuery: "" });
+  });
+
+  it("hides the mode toggle when semantic search is unavailable", async () => {
+    vi.mocked(api.api.searchStatus).mockResolvedValue({
+      available: false, embeddingsConfigured: false, vecAvailable: true, indexed: 0, pending: 0,
+    });
+    renderWithQuery(<InboxPage />);
+    await screen.findByTestId("sync-now-button");
+    expect(screen.queryByTestId("search-mode-toggle")).toBeNull();
+  });
+
+  it("shows the toggle + a reindex button when available with pending items", async () => {
+    vi.mocked(api.api.searchStatus).mockResolvedValue({
+      available: true, embeddingsConfigured: true, vecAvailable: true, indexed: 5, pending: 3,
+    });
+    renderWithQuery(<InboxPage />);
+
+    expect(await screen.findByTestId("search-mode-toggle")).toBeInTheDocument();
+    const reindex = await screen.findByTestId("reindex-semantic");
+    fireEvent.click(reindex);
+    await waitFor(() => expect(api.api.reindexSemantic).toHaveBeenCalled());
+  });
+
+  it("routes a query through semanticSearch when semantic mode is active", async () => {
+    vi.mocked(api.api.searchStatus).mockResolvedValue({
+      available: true, embeddingsConfigured: true, vecAvailable: true, indexed: 5, pending: 0,
+    });
+    usePrismStore.setState({ searchMode: "semantic", searchQuery: "neural nets" });
+    renderWithQuery(<InboxPage />);
+
+    await waitFor(() =>
+      expect(api.api.semanticSearch).toHaveBeenCalledWith(
+        expect.objectContaining({ q: "neural nets" }),
+      ),
+    );
+  });
+
+  it("uses FTS (listItems) when semantic is available but mode is keyword", async () => {
+    vi.mocked(api.api.searchStatus).mockResolvedValue({
+      available: true, embeddingsConfigured: true, vecAvailable: true, indexed: 5, pending: 0,
+    });
+    usePrismStore.setState({ searchMode: "keyword", searchQuery: "neural nets" });
+    renderWithQuery(<InboxPage />);
+
+    await waitFor(() =>
+      expect(api.api.listItems).toHaveBeenCalledWith(expect.objectContaining({ q: "neural nets" })),
+    );
+    expect(api.api.semanticSearch).not.toHaveBeenCalled();
   });
 });

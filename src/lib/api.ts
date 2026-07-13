@@ -23,6 +23,7 @@ import type {
   LlmConfigUpdate,
   PrismHealth,
   ProviderSchema,
+  SearchStatus,
   Source,
   SyncLogEntry,
   SyncResult,
@@ -151,6 +152,34 @@ export const api = {
       `/api/items/${id}/tags/${encodeURIComponent(tag)}`,
       { method: "DELETE" },
     ),
+
+  // ----- Semantic search (v0.5) -----
+  /** GET /api/search/status — availability + indexed/pending counts. */
+  searchStatus: () => request<SearchStatus>("/api/search/status"),
+  /** POST /api/search/reindex — embed distilled items missing a vector. */
+  reindexSemantic: (batchLimit?: number) =>
+    request<{ available: boolean; indexed: number; failed: number; remaining: number }>(
+      `/api/search/reindex${batchLimit ? `?batch_limit=${batchLimit}` : ""}`,
+      { method: "POST" },
+    ),
+  /**
+   * GET /api/search/semantic — nearest items to `q` by embedding. Returns
+   * an empty list when semantic search is unavailable (the caller should
+   * fall back to the FTS `listItems`).
+   */
+  semanticSearch: (params: {
+    q: string;
+    limit?: number;
+    sourceId?: string;
+    status?: string;
+  }) => {
+    const search = new URLSearchParams();
+    search.set("q", params.q);
+    search.set("limit", String(params.limit ?? 200));
+    if (params.sourceId) search.set("source_id", params.sourceId);
+    if (params.status && params.status !== "all") search.set("status", params.status);
+    return request<KnowledgeItem[]>(`/api/search/semantic?${search.toString()}`);
+  },
 
   // ----- Sync -----
   /**

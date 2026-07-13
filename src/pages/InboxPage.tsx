@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { usePrismStore } from "@/store";
 import { Card, CardContent } from "@/components/ui/card";
@@ -62,8 +62,23 @@ export function InboxPage() {
   const setStatusFilter = usePrismStore((s) => s.setStatusFilter);
   const tagFilter = usePrismStore((s) => s.tagFilter);
   const setTagFilter = usePrismStore((s) => s.setTagFilter);
+  const searchMode = usePrismStore((s) => s.searchMode);
+  const setSearchMode = usePrismStore((s) => s.setSearchMode);
   const { t, language } = useLanguage();
   const preferEn = language === "en";
+
+  // Semantic search availability + index counts. Drives the mode toggle and
+  // the reindex affordance in the filter rail.
+  const { data: searchStatus } = useQuery({
+    queryKey: ["search-status"],
+    queryFn: () => api.searchStatus(),
+  });
+
+  // Semantic mode only actually engages when it's available AND the user
+  // has typed a query (KNN needs a query vector). Otherwise we use the FTS
+  // path, which also serves the default no-query list.
+  const useSemantic =
+    searchMode === "semantic" && !!searchStatus?.available && debouncedQuery.trim().length > 0;
 
   // Source / status filters are applied server-side (see api.listItems) —
   // they used to be client-side-only, which silently broke once a source
@@ -72,14 +87,23 @@ export function InboxPage() {
   // filter refetches the *filtered* set from the sidecar instead of
   // re-slicing whatever happened to already be in memory.
   const { data: items, isLoading } = useQuery({
-    queryKey: ["items", { q: debouncedQuery, sourceId: selectedSourceId, status: statusFilter, tag: tagFilter }],
+    queryKey: [
+      "items",
+      { q: debouncedQuery, sourceId: selectedSourceId, status: statusFilter, tag: tagFilter, semantic: useSemantic },
+    ],
     queryFn: () =>
-      api.listItems({
-        q: debouncedQuery || undefined,
-        sourceId: selectedSourceId ?? undefined,
-        status: statusFilter,
-        tag: tagFilter ?? undefined,
-      }),
+      useSemantic
+        ? api.semanticSearch({
+            q: debouncedQuery,
+            sourceId: selectedSourceId ?? undefined,
+            status: statusFilter,
+          })
+        : api.listItems({
+            q: debouncedQuery || undefined,
+            sourceId: selectedSourceId ?? undefined,
+            status: statusFilter,
+            tag: tagFilter ?? undefined,
+          }),
   });
 
   const { data: sources } = useQuery({
@@ -93,6 +117,15 @@ export function InboxPage() {
   const { data: tags } = useQuery({
     queryKey: ["tags"],
     queryFn: () => api.listTags(),
+  });
+
+  // Build / refresh the semantic index for distilled items missing a vector.
+  const reindexMut = useMutation({
+    mutationFn: () => api.reindexSemantic(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["search-status"] });
+      qc.invalidateQueries({ queryKey: ["items"] });
+    },
   });
 
   // Sync button state. `idle` is the default. While a sync is running we
@@ -220,7 +253,46 @@ export function InboxPage() {
   return (
     <div className="flex h-full">
       {/* Source filter rail */}
-      <div className="hidden w-48 shrink-0 border-r bg-card/20 p-3 md:block">
+      <div className="hidden w-48 shrink-0 overflow-y-auto border-r bg-card/20 p-3 md:block">
+        {/* Search mode — keyword (FTS) vs semantic (embeddings). Only shown
+            when semantic search is available (a MiniMax key + sqlite-vec). */}
+        {searchStatus?.available && (
+          <>
+            <h3 className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              {t("inbox.searchMode")}
+            </h3>
+            <div className="mb-1 grid grid-cols-2 gap-1" data-testid="search-mode-toggle">
+              {(["keyword", "semantic"] as const).map((m) => (
+                <Button
+                  key={m}
+                  variant={searchMode === m ? "secondary" : "ghost"}
+                  size="sm"
+                  className="h-7"
+                  onClick={() => setSearchMode(m)}
+                  data-testid={`search-mode-${m}`}
+                  data-active={searchMode === m}
+                >
+                  {t(`inbox.searchMode_${m}`)}
+                </Button>
+              ))}
+            </div>
+            {searchStatus.pending > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="mb-3 h-7 w-full justify-start text-[11px] text-muted-foreground"
+                onClick={() => reindexMut.mutate()}
+                disabled={reindexMut.isPending}
+                data-testid="reindex-semantic"
+              >
+                {reindexMut.isPending
+                  ? t("inbox.reindexing")
+                  : t("inbox.reindexPending", { n: searchStatus.pending })}
+              </Button>
+            )}
+          </>
+        )}
+
         <h3 className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           {t("inbox.filter")}
         </h3>
