@@ -16,6 +16,10 @@ tauri-build = { version = "2.0", features = [] }
 [dependencies]
 tauri = { version = "2.1", features = [] }
 tauri-plugin-shell = "2.0"
+# v0.5: OS notifications when a background sync brings in new items. The
+# JS side (@tauri-apps/plugin-notification) drives it; this registers the
+# Rust plugin + its commands (permission request / send).
+tauri-plugin-notification = "2.0"
 # Local encrypted-file keystore (replaces tauri-plugin-keyring — see
 # `src-tauri/src/keystore.rs`). Encrypted with AES-256-GCM; the master key
 # lives next to the data file in `~/.prism/keystore.key`. No OS prompt on

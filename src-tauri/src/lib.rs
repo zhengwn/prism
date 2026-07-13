@@ -12,6 +12,7 @@ use sidecar::SidecarState;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // One-shot migration from the v0.2a OS-keychain layout to the
             // new local encrypted-file keystore. Idempotent — once the

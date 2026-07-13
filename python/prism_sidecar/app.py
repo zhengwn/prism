@@ -356,6 +356,18 @@ async def sync_history(limit: int = Query(10, ge=1, le=200)) -> list[SyncLogEntr
     return await store.list_sync_history(limit=limit)
 
 
+@app.get(
+    "/api/sync/jobs",
+    response_model=list[SyncResult],
+    response_model_by_alias=True,
+)
+async def sync_jobs(limit: int = Query(10, ge=1, le=100)) -> list[SyncResult]:
+    """Recent sync runs (aggregated per job). The frontend polls this to
+    notify on new items from background/scheduled syncs. Declared before the
+    `/api/sync/{job_id}` route so `jobs` isn't captured as a job id."""
+    return await store.list_recent_jobs(limit=limit)
+
+
 @app.post(
     "/api/sync",
     response_model=SyncResult,

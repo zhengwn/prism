@@ -3,8 +3,11 @@ import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { DetailPanel } from "./DetailPanel";
 import { CommandPalette } from "./CommandPalette";
+import { useSyncNotifications } from "@/hooks/useSyncNotifications";
 
 export function AppLayout() {
+  // Background-sync → OS notification (opt-in, polls while enabled).
+  useSyncNotifications();
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background">
       <Sidebar />

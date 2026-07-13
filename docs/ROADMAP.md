@@ -2,7 +2,7 @@
 
 > 公开 v1.0 之前的规划。v0.2c（多源补齐）**已收尾并在本机全量验证过**（2026-07-10）：Bilibili、YouTube、Podcast、arXiv、**X（bridge-RSS PoC）** 五路 fetcher + 错误重试/速率限制 + 优雅关闭 + Vite setApiKey 修复 + **Apply & Restart Sidecar 按钮**；**Playwright 前端 E2E 已跑绿**（Tauri-shell 层留待 WebdriverIO + `@wdio/tauri-service`；macOS 无原版 tauri-driver）。v0.3 已开工：**只读 MCP server（stdio）已落地**（`prism-mcp`，四工具，真实 stdio 冒烟过），见 v0.3 段。
 >
-> **实测结果**（不再是静态计数）：`uv run pytest` **331/331 绿**（v0.2c 254 + v0.3 MCP 51 + v0.5 标签 18 + 语义搜索 8）· `npm test` **46/46 绿**（v0.5 ⌘K 命令面板 +8 / 标签 +6 / 语义搜索 +4）· `cargo test` **17/17 绿**（keystore 8 + llm_config 9）· `cargo check --all-targets` 干净 · `npm run build` 干净 · `npm run test:e2e` **7/7 绿**（命令面板 +2）。v0.2c 跑之前修掉了三个真实缺陷；随后又用真实 MiniMax key 跑通了 **distill 端到端**（2 条真实 LLM 调用 + FTS5 索引验证），另修两个附带问题。见下面「收尾验证」小节。
+> **实测结果**（不再是静态计数）：`uv run pytest` **332/332 绿**（v0.2c 254 + v0.3 MCP 51 + v0.5 标签 18 + 语义搜索 8 + 通知 1）· `npm test` **53/53 绿**（v0.5 ⌘K 命令面板 +8 / 标签 +6 / 语义搜索 +4 / 通知 +7）· `cargo test` **17/17 绿**（keystore 8 + llm_config 9）· `cargo check --all-targets` 干净 · `npm run build` 干净 · `npm run test:e2e` **7/7 绿**（命令面板 +2）。v0.2c 跑之前修掉了三个真实缺陷；随后又用真实 MiniMax key 跑通了 **distill 端到端**（2 条真实 LLM 调用 + FTS5 索引验证），另修两个附带问题。见下面「收尾验证」小节。
 
 ## 实际状态
 
@@ -195,7 +195,7 @@
   但打包时要补这条才能在分发版里用上语义搜索
 - [ ] **自动更新（tauri-plugin-updater）**：需托管 release 端点 + 更新签名密钥对
 
-## v0.5 — UX 完善（进行中）
+## v0.5 — UX 完善 ✅
 
 - [x] **键盘快捷键（⌘K 命令面板）**（2026-07-12）：新增 `src/components/CommandPalette.tsx`——
   全局覆盖层，⌘K / Ctrl+K 唤起（TopBar 里那个一直是装饰的 `⌘K` 角标现在是真按钮了），
@@ -245,7 +245,22 @@
   「汽车与芯片」→ 自动驾驶芯片，语义质量过关）；② 起真 sidecar + 浏览器：语义切换出现、
   切到语义搜「语言模型和自然语言」→ 大语言模型条目排第一（与日期序不同，确认语义排序真生效），
   network 确认命中 `/api/search/semantic 200`。
-- [ ] 通知（重要源更新推送）
+- [x] **通知（重要源更新推送）**（2026-07-13）：**收藏其实早有**，这条做的是「后台同步抓到
+  新内容 → 系统通知」。前端不跑调度，所以要有个信号让 webview 知道后台/定时同步完成了：
+  后端加 `GET /api/sync/jobs`（按 run 聚合的 `sync_jobs`，不是 per-source 的 `sync_log`——
+  一次同步一条通知，不是每源一条；声明在 `/api/sync/{job_id}` 之前免得 `jobs` 被当成 job id）。
+  Tauri：加 `tauri-plugin-notification`（Cargo + lib.rs `.plugin(init())` + capability
+  `notification:default` + JS `@tauri-apps/plugin-notification`），`cargo check` 过。
+  前端：`lib/notifications.ts`（Tauri 插件路径 + 浏览器 `window.Notification` 兜底 + 权限请求，
+  插件懒加载所以浏览器 dev 不会误载）、`useSyncNotifications` hook（挂在 AppLayout，开启后轮询
+  jobs、挂载时把当前最新 job 记为「已知」避免为历史误报、之后出现更新的 done job 且 `itemsNew>0`
+  就发一条——**跳过用户手点的 Sync now**（已有 in-app toast，store 记 `lastManualJobId`）、
+  关掉后忘掉种子）、Settings 加「通知」卡片开关（开启前先请求权限，拒绝则保持关 + 提示）。
+  测试：pytest +1（`list_recent_jobs` 排序）、vitest +7（hook 的 5 个决策分支:种子不报/新条目报/
+  跳过手动/无新条目不报/关闭时不轮询 + Settings 开关授权/拒绝两路）。**验证**:`cargo check` 过、
+  jobs 端点 HTTP 200、浏览器实跑确认通知卡片渲染 + 点开关走 `Notification.requestPermission()`
+  被拒 → 开关保持关 + 红字提示(兜底路径实测)。**真实 OS 通知投递**(Tauri 插件 `sendNotification`)
+  跟 keystore/invoke 一样是壳内路径,需 `tauri dev`/打包版才能实测——记为已知限制。
 
 ## v1.0 — 公开发布
 

@@ -1,4 +1,8 @@
 import { create } from "zustand";
+import {
+  getStoredNotificationsEnabled,
+  setStoredNotificationsEnabled,
+} from "@/lib/notifications";
 
 // UI-only state: selection + filters. Server data (sources / items) is
 // owned by TanStack Query's cache (see `useQuery` calls in the pages) —
@@ -28,6 +32,13 @@ interface PrismState {
   // and the palette itself all read/write the same flag.
   commandPaletteOpen: boolean;
 
+  // v0.5 notifications. `notificationsEnabled` is the persisted opt-in.
+  // `lastManualJobId` is the job the user kicked off via "Sync now"; the
+  // notification hook skips it so a manual sync (already toasted in-app)
+  // doesn't also fire an OS notification.
+  notificationsEnabled: boolean;
+  lastManualJobId: string | null;
+
   // Actions
   setSelectedSource: (id: string | null) => void;
   setSelectedItem: (id: string | null) => void;
@@ -36,6 +47,8 @@ interface PrismState {
   setTagFilter: (tag: string | null) => void;
   setSearchMode: (m: PrismState["searchMode"]) => void;
   setCommandPaletteOpen: (open: boolean) => void;
+  setNotificationsEnabled: (on: boolean) => void;
+  setLastManualJobId: (id: string | null) => void;
 }
 
 export const usePrismStore = create<PrismState>((set) => ({
@@ -46,6 +59,8 @@ export const usePrismStore = create<PrismState>((set) => ({
   tagFilter: null,
   searchMode: "keyword",
   commandPaletteOpen: false,
+  notificationsEnabled: getStoredNotificationsEnabled(),
+  lastManualJobId: null,
 
   setSelectedSource: (id) => set({ selectedSourceId: id, selectedItemId: null }),
   setSelectedItem: (id) => set({ selectedItemId: id }),
@@ -54,4 +69,9 @@ export const usePrismStore = create<PrismState>((set) => ({
   setTagFilter: (tag) => set({ tagFilter: tag }),
   setSearchMode: (m) => set({ searchMode: m }),
   setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
+  setNotificationsEnabled: (on) => {
+    setStoredNotificationsEnabled(on);
+    set({ notificationsEnabled: on });
+  },
+  setLastManualJobId: (id) => set({ lastManualJobId: id }),
 }));

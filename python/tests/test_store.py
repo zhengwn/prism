@@ -262,3 +262,17 @@ async def test_schema_version_is_v5_with_webhooks_and_item_tags(initialized):
             (table,),
         )
         assert await cur.fetchone() is not None, f"table {table} missing"
+
+
+@pytest.mark.asyncio
+async def test_list_recent_jobs_newest_first(initialized):
+    from prism_sidecar.models import SyncJobStatus
+
+    j1 = await store.create_job(None, sources_total=2)
+    await store.finish_job(j1, status=SyncJobStatus.done, items_new=3, items_distilled=3)
+    j2 = await store.create_job(None, sources_total=2)
+    await store.finish_job(j2, status=SyncJobStatus.done, items_new=0, items_distilled=0)
+
+    jobs = await store.list_recent_jobs(limit=10)
+    assert [j.job_id for j in jobs] == [j2, j1]  # newest first
+    assert jobs[0].items_new == 0 and jobs[1].items_new == 3

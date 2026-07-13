@@ -208,9 +208,16 @@ export const api = {
       `/api/sync/${jobId}/cancel`,
       { method: "POST" },
     ),
-  /** GET /api/sync/history?limit=N — list recent sync runs. */
+  /** GET /api/sync/history?limit=N — list recent per-source sync log rows. */
   getSyncHistory: (limit?: number) =>
     request<SyncLogEntry[]>(`/api/sync/history${limit ? `?limit=${limit}` : ""}`),
+  /**
+   * GET /api/sync/jobs?limit=N — recent sync RUNS (aggregated per job,
+   * newest first). The notification hook polls this to detect a background
+   * sync that brought in new items.
+   */
+  getSyncJobs: (limit?: number) =>
+    request<SyncResult[]>(`/api/sync/jobs${limit ? `?limit=${limit}` : ""}`),
 
   // ----- Distill -----
   /**

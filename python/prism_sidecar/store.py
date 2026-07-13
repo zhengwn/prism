@@ -989,6 +989,45 @@ async def get_job(job_id: str) -> Optional[SyncResult]:
     )
 
 
+async def list_recent_jobs(limit: int = 10) -> list[SyncResult]:
+    """Recent sync JOBS (aggregated per run), newest first.
+
+    Distinct from `list_sync_history`, which returns per-source `sync_log`
+    rows — a job row carries the run-level `items_new` total, which is what
+    the frontend's new-item notifications key off (one notification per run,
+    not one per source).
+    """
+    db = get_db()
+    cur = await db.execute(
+        """
+        SELECT job_id, source_id, status, started_at, finished_at,
+               items_new, items_distilled, sources_total, sources_done, error
+        FROM sync_jobs
+        ORDER BY started_at DESC
+        LIMIT ?
+        """,
+        (int(limit),),
+    )
+    rows = await cur.fetchall()
+    out: list[SyncResult] = []
+    for (jid, sid, status, started, finished, new_n, distilled_n, total, done, err) in rows:
+        out.append(
+            SyncResult(
+                job_id=jid,
+                source_id=sid,  # type: ignore[arg-type]
+                started_at=_parse_iso(started) or datetime.now(timezone.utc),
+                finished_at=_parse_iso(finished),
+                status=SyncJobStatus(status),
+                items_new=int(new_n or 0),
+                items_distilled=int(distilled_n or 0),
+                sources_total=int(total or 0),
+                sources_done=int(done or 0),
+                error=err,
+            )
+        )
+    return out
+
+
 async def is_any_job_running() -> bool:
     """True if any sync_jobs row is currently in 'running' state."""
     db = get_db()

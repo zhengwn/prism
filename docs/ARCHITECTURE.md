@@ -389,7 +389,7 @@ CREATE VIRTUAL TABLE items_fts USING fts5(
 | Python fetcher/distiller/store/sync/api/mcp/webhook | `cd python && uv run pytest -v` — **305/305 绿** | bilibili prompt 31 / **mcp server 26**（v0.3 读+写+webhook 工具）/ **x fetcher 23** / deepseek distiller 22 / **webhooks 21**（v0.3 SSRF/HMAC/投递/fail-streak）/ bilibili fetcher 18 / FTS5 17 / **youtube fetcher 16** / settings api 20 / **retry+throttle 13** / sync 12 / api 12 / provider registry 11 / minimax distiller 11 / **fetcher registry 11**（含 `lookback_days` 签名回归）/ **store 13**（+webhook CRUD/v4 migration）/ **arxiv fetcher 8** / rss 7 / distill 5 / **podcast fetcher 4** / hn 4 |
 | Rust keystore | `cargo test --test keystore_smoke` | **8/8 绿**（roundtrip+密文无明文 / 0600 / 损坏容错 / 并发写 / key_last4 / active-provider 校验 / 迁移幂等 / 真 macOS Keychain migration roundtrip） |
 | Rust 公开 helper + IPC serde | `cargo test --test llm_config_smoke` | **9/9 绿**（username 格式 / is_known_provider / default_model / CustomLlmConfig JSON 形状 / IPC camelCase，含 `keyLast4`/`keyLength`）。注：v0.2b~v0.2c 期间这个 target 一直**编译不过**（结构体加了字段、测试没跟），v0.2c 收尾才修好 |
-| React 关键组件 | `npm test` — **46/46 绿** | Button 3 / DetailPanel 8 / inline-markdown 10 / InboxPage 8 / SettingsPage 4 / SourcesPage 5 / CommandPalette 8 |
+| React 关键组件 | `npm test` — **53/53 绿** | Button 3 / DetailPanel 8 / inline-markdown 10 / InboxPage 8 / SettingsPage 6 / SourcesPage 5 / CommandPalette 8 / useSyncNotifications 5 |
 | 前端 E2E（浏览器层） | `npm run test:e2e` — **7/7 绿** | Playwright + hermetic mock sidecar：inbox 渲染 / sync toast / 建 X 源 / settings restart 按钮 / 中文 UI 渲染 `titleZh` / ⌘K 命令面板导航 + 条目搜索跳转。**挂不到 Tauri 原生 webview**，壳内 `invoke`/keystore/sidecar spawn 未覆盖 |
 | 端到端 | `bash scripts/smoke.sh` | 启动 sidecar → sync → 验 items。⚠️ 不隔离 `PRISM_DATA_DIR`，会写真实 `~/.prism/data.db` |
 

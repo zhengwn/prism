@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SettingsPage } from "../SettingsPage";
+import { usePrismStore } from "@/store";
 import * as api from "@/lib/api";
+import * as notifications from "@/lib/notifications";
 import type { LlmConfig, ProviderSchema } from "@/types";
 
 // `useTheme` calls `window.matchMedia` for the system-mode live listener.
@@ -37,6 +39,7 @@ vi.mock("@/lib/api", () => ({
     redistill: vi.fn(),
     syncAll: vi.fn(),
   },
+  isTauri: () => false,
   SIDECAR_BASE: "http://127.0.0.1:8765",
   PrismAPIError: class PrismAPIError extends Error {
     constructor(public status: number, message: string) {
@@ -45,6 +48,13 @@ vi.mock("@/lib/api", () => ({
     }
   },
 }));
+
+// Keep the real localStorage-backed getStored/setStored (the store imports
+// them); stub the permission request + notify.
+vi.mock("@/lib/notifications", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/notifications")>();
+  return { ...actual, ensureNotificationPermission: vi.fn(), notify: vi.fn() };
+});
 
 // v0.2a+: only 2 providers, both key-required. `defaultModel` carries
 // the USER-FACING model id (no litellm routing prefix) — the distiller
@@ -197,5 +207,43 @@ describe("SettingsPage — Provider switcher (AiSection)", () => {
     expect(call).toBeDefined();
     expect(call!.provider).toBe("deepseek");
     expect(call!.apiKey).toBe("sk-test-1234");
+  });
+});
+
+describe("SettingsPage — Notifications card", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.api.listProviders).mockResolvedValue(FAKE_SCHEMAS);
+    vi.mocked(api.api.getLlmConfig).mockResolvedValue(FAKE_LLM_CONFIG);
+    vi.mocked(api.api.health).mockResolvedValue(undefined as never);
+    vi.mocked(api.api.getPendingDistillCount).mockResolvedValue({ pending: 0 });
+    usePrismStore.setState({ notificationsEnabled: false });
+    localStorage.clear();
+  });
+
+  it("enables notifications when permission is granted", async () => {
+    vi.mocked(notifications.ensureNotificationPermission).mockResolvedValue(true);
+    renderWithQuery(<SettingsPage />);
+
+    const toggle = await screen.findByTestId("notifications-toggle");
+    expect(toggle).toHaveAttribute("data-enabled", "false");
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(notifications.ensureNotificationPermission).toHaveBeenCalled());
+    await waitFor(() => expect(usePrismStore.getState().notificationsEnabled).toBe(true));
+    expect(toggle).toHaveAttribute("data-enabled", "true");
+  });
+
+  it("stays off and shows a hint when permission is denied", async () => {
+    vi.mocked(notifications.ensureNotificationPermission).mockResolvedValue(false);
+    renderWithQuery(<SettingsPage />);
+
+    const toggle = await screen.findByTestId("notifications-toggle");
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(screen.getByTestId("notifications-denied")).toBeInTheDocument());
+    expect(usePrismStore.getState().notificationsEnabled).toBe(false);
+    expect(toggle).toHaveAttribute("data-enabled", "false");
   });
 });

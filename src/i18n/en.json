@@ -55,6 +55,15 @@
     "cardTitle": "Language",
     "cardDescription": "Interface language. Changes apply immediately."
   },
+  "notifications": {
+    "cardTitle": "Notifications",
+    "cardDescription": "Get a desktop notification when a background sync brings in new items.",
+    "on": "On",
+    "off": "Off",
+    "permissionDenied": "Permission denied — enable notifications for Prism in your system settings.",
+    "newItemsTitle": "New in Prism",
+    "newItemsBody": "{{n}} new items were distilled."
+  },
   "inbox": {
     "filter": "Filter",
     "status": "Status",

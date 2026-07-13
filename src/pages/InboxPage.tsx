@@ -64,6 +64,7 @@ export function InboxPage() {
   const setTagFilter = usePrismStore((s) => s.setTagFilter);
   const searchMode = usePrismStore((s) => s.searchMode);
   const setSearchMode = usePrismStore((s) => s.setSearchMode);
+  const setLastManualJobId = usePrismStore((s) => s.setLastManualJobId);
   const { t, language } = useLanguage();
   const preferEn = language === "en";
 
@@ -170,6 +171,9 @@ export function InboxPage() {
       const initial = await api.syncAll();
       const jobId = initial.jobId;
       setActiveJobId(jobId);
+      // Tell the notification hook this run is user-initiated, so it doesn't
+      // also fire an OS notification on top of the in-app toast below.
+      setLastManualJobId(jobId);
 
       const POLL_MS = 250;
       const POLL_TIMEOUT_MS = 5 * 60 * 1000; // 5 min — anything longer = bug

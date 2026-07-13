@@ -55,6 +55,15 @@
     "cardTitle": "语言",
     "cardDescription": "界面语言。切换立即生效。"
   },
+  "notifications": {
+    "cardTitle": "通知",
+    "cardDescription": "后台同步抓到新内容时，给你一条桌面通知。",
+    "on": "已开启",
+    "off": "已关闭",
+    "permissionDenied": "权限被拒绝——请在系统设置里为 Prism 开启通知。",
+    "newItemsTitle": "Prism 有新内容",
+    "newItemsBody": "抓取并提炼了 {{n}} 条新内容。"
+  },
   "inbox": {
     "filter": "筛选",
     "status": "状态",
