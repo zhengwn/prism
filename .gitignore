@@ -147,3 +147,9 @@ data/local/
 # opencode 运行时数据：opencode.json 含用户 API key + 私有 baseURL，
 # node_modules 是指向 opencode SDK 的符号链接，整目录都是 per-machine 状态
 .harness/reins/*/opencode/
+
+# ===== Claude Code =====
+# 浏览器预览工具生成的 dev-server 配置，per-machine，不需要共享。
+# 只忽略这个文件——.claude/ 下的其它内容（如项目级 settings / 自定义
+# agents、commands）仍可正常提交。
+.claude/launch.json
