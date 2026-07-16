@@ -9,7 +9,7 @@ Prism 是一个 **AI 资讯聚合 + 知识提炼** 桌面应用，把分散在 R
 
 ---
 
-## 当前状态：v0.4 进行中（macOS 打包已落地）
+## 当前状态：v0.5 已完成（UX 完善）· v0.4 打包部分落地（macOS）
 
 **v0.2b 已交付**（2026-06-10）：v0.2a 之后的一轮基础设施重构 + UX 打磨——
 
@@ -26,7 +26,11 @@ Prism 是一个 **AI 资讯聚合 + 知识提炼** 桌面应用，把分散在 R
 
 收尾验证时修掉了三个真实缺陷（浮点 jitter 断言、`llm_config_smoke.rs` 自 v0.2b 起编译不过、vitest 误收 Playwright spec），并真跑了 sidecar 端到端（真实 RSS 30 条 / arXiv 50 条、`FetchError` → `last_error` + 24h 冷却、SIGTERM 中断 sync 3.87s 内落盘部分进度）。详见 `docs/ROADMAP.md` 的「v0.2c 收尾验证」。
 
-**v0.3 已完成**（2026-07-11）：**MCP server**（`prism-mcp`，stdio 九工具——读 4 + 写 subscribe/set_enabled + webhook 注册 3，见下面「Agent 接入」）+ **Webhook 推送**（新条目按源/标签匹配后 sidecar HMAC 签名 POST，含 SSRF 守卫）+ **Skill bundle**（`skills/prism-knowledge-base/`，可移植 Agent Skills 开放标准 + OpenCode `opencode.jsonc` 接入）。下一步 v0.4 跨平台打包。
+**v0.3 已完成**（2026-07-11）：**MCP server**（`prism-mcp`，stdio 九工具——读 4 + 写 subscribe/set_enabled + webhook 注册 3，见下面「Agent 接入」）+ **Webhook 推送**（新条目按源/标签匹配后 sidecar HMAC 签名 POST，含 SSRF 守卫）+ **Skill bundle**（`skills/prism-knowledge-base/`，可移植 Agent Skills 开放标准 + OpenCode `opencode.jsonc` 接入）。
+
+**v0.4 部分落地**（2026-07-11）：**macOS 打包**——PyInstaller 把 Python sidecar 冻成自包含二进制（~77MB）打进 Tauri 包，终端用户不需要 uv/Python；`npm run package:mac` 出 `Prism.app` + DMG（未签名、arm64，见下面「打包成桌面 App」）。Windows / 签名公证 / universal / 自动更新仍待做。
+
+**v0.5 已完成**（2026-07-13，四个切片全部本机验证）：一轮 UX 完善——**⌘K 命令面板**（全局跳转页面/信息源/条目 + 切主题/语言，自研无第三方库）、**用户标签**（蒸馏自动标签之外的手动标签，可编辑 chip + 收件箱按标签筛选；收藏/星标 v0.2a 已有）、**语义搜索**（MiniMax `embo-01` embedding + sqlite-vec KNN，收件箱可切「关键词 / 语义」；无 key 或扩展未加载时自动回落 FTS5）、**桌面通知**（`tauri-plugin-notification`，后台/定时同步抓到新内容时发系统通知，Settings 开关 + 权限请求，手动 Sync now 不重复弹）。真实 MiniMax key 实跑：语义查询 4/4 命中预期条目。两条壳内限制诚实记账（见 ROADMAP）：冻结包的 sqlite-vec `.dylib` 需 `--add-binary`、真实 OS 通知投递需 `tauri dev`/打包版才能实测。
 
 详细规划见 [`docs/ROADMAP.md`](./docs/ROADMAP.md)。
 
@@ -36,8 +40,10 @@ Prism 是一个 **AI 资讯聚合 + 知识提炼** 桌面应用，把分散在 R
 
 - 📡 **多源订阅** — HN Algolia、RSS、博客、Podcast、arXiv、Bilibili、YouTube、X（v0.2c，X 为 bridge-RSS PoC，需自托管 RSSHub/Nitter；PDF / 本地文件待做）
 - 🧠 **智能提炼** — LLM 把每条素材压成结构化中文知识单元（标题/摘要/关键点/标签），保留原文做双语索引
-- 🔍 **全文搜索** — SQLite FTS5，中文 prefix match，~5ms 命中（v0.2b）
+- 🔍 **全文 + 语义搜索** — SQLite FTS5 中文 prefix match（~5ms，v0.2b）；收件箱可切「语义」模式走 MiniMax embedding + sqlite-vec 向量近邻（v0.5，无 key 时自动回落 FTS）
 - ⚡ **实时进度 + 可取消** — 蒸馏 / 同步跑太久可中途取消，UI 不卡（v0.2b）
+- ⌘ **⌘K 命令面板 + 标签**（v0.5）— 全局跳转页面/源/条目、切主题语言；手动打标签 + 按标签筛选收件箱
+- 🔔 **桌面通知**（v0.5）— 后台/定时同步抓到新内容时系统通知（`tauri-plugin-notification`，可在 Settings 开关）
 - 🔌 **Agent 原生**（v0.3）— 暴露 Skill + MCP 接口，让 Claude Code / Cursor / OpenCode 等 Agent 直接读、写、订阅 Prism
 - 💻 **本地优先** — 数据全在本地 SQLite，API key 走本地加密 keystore（`~/.prism/keystore.json`，AES-256-GCM），不上传云端
 
@@ -156,9 +162,11 @@ prism/
 │   │   ├── models.py         # Pydantic v2（含双语 KnowledgeItem）
 │   │   ├── db.py             # aiosqlite + schema migration（含 FTS5 v2）
 │   │   ├── fts5.py           # SQLite FTS5 全文搜索（v0.2b）
+│   │   ├── embeddings.py     # MiniMax embo-01 embedding 客户端（v0.5）
+│   │   ├── search.py         # 语义搜索编排：reindex + KNN + 蒸馏后自动索引（v0.5）
 │   │   ├── progress.py       # 提炼进度内存 store（v0.2b）
 │   │   ├── settings.py       # active provider R/W
-│   │   ├── store.py          # SQLite-backed CRUD（含 v0.3 webhooks）
+│   │   ├── store.py          # SQLite-backed CRUD（含 v0.3 webhooks / v0.5 item_tags + items_vec）
 │   │   ├── mcp_server.py     # MCP server（stdio，v0.3；prism-mcp 入口；读 4 + 写 2 + webhook 3 工具）
 │   │   ├── webhooks.py       # webhook 投递 + HMAC 签名 + SSRF 守卫（v0.3）
 │   │   ├── scheduler.py      # APScheduler 集成（每天 9am Asia/Shanghai）
@@ -167,7 +175,7 @@ prism/
 │   │   ├── distillers/       # LLM 提炼（base + deepseek + minimax + bilibili_prompt + registry）
 │   │   ├── pipeline/         # sync.py（单源）+ orchestrator.py（job 编排/取消）+ distill.py（重蒸馏批处理）
 │   │   └── data/fixtures.py  # 8 个种子源（HN + 3 个 Bilibili PoC + 4 个 RSS）
-│   └── tests/                # pytest 305 个 case（实跑核对；含 bilibili/youtube/arxiv/x fetcher、retry、fetcher registry、mcp server）
+│   └── tests/                # pytest 332 个 case（实跑核对；含 bilibili/youtube/arxiv/x fetcher、retry、fetcher registry、mcp server、用户标签、语义搜索、sync jobs）
 ├── docs/                     # 设计文档
 │   ├── ROADMAP.md
 │   └── ARCHITECTURE.md
@@ -187,8 +195,8 @@ prism/
 - [x] **v0.2b** — 基础设施重构 + UX 打磨（本地 keystore / 2 provider / 实时进度 / 可取消 / FTS5 / 详情 markdown）
 - [x] **v0.2c** — 多源补齐 + 错误处理：七路 fetcher（RSS/HN/Bilibili/YouTube/Podcast/arXiv/X）+ 重试/限速/冷却 + 优雅关闭 + Playwright E2E，全部本机实测
 - [x] **v0.3** — Agent 接口：MCP server（stdio 九工具，含 subscribe/webhook 写）+ Webhook 推送（HMAC + SSRF）+ Skill bundle（Agent Skills 开放标准 + OpenCode 接入）
-- [ ] **v0.4**（进行中）— 跨平台打包：macOS DMG + PyInstaller 冻结 sidecar 已落地（未签名、arm64）；Windows / 签名公证 / universal / 自动更新待做
-- [ ] **v0.5** — UX 完善（标签 / ⌘K / 通知）
+- [~] **v0.4**（部分）— 跨平台打包：macOS DMG + PyInstaller 冻结 sidecar 已落地（未签名、arm64）；Windows / 签名公证 / universal / 自动更新待做
+- [x] **v0.5** — UX 完善：⌘K 命令面板 + 用户标签 + 语义搜索（MiniMax embedding + sqlite-vec）+ 桌面通知，四切片全部本机验证
 - [ ] **v1.0** — 公开发布
 
 ---
