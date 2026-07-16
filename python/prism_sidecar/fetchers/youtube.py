@@ -35,8 +35,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import httpx
-
+from prism_sidecar import _http
 from prism_sidecar.config import FETCH_LOOKBACK_DAYS, FETCH_TIMEOUT_SEC
 from prism_sidecar.fetchers import _retry
 from prism_sidecar.fetchers._retry import retry_async
@@ -452,19 +451,19 @@ class YouTubeFetcher:
         if picked is not None:
             track_url, subtitle_lang, subtitle_kind = picked
             try:
-                async with httpx.AsyncClient(
-                    timeout=self._timeout, follow_redirects=True,
-                ) as client:
+                # Shared client (prism_sidecar._http) — one pool for the
+                # whole process instead of a fresh client per video.
+                client = _http.get_client()
 
-                    async def _get() -> dict[str, Any]:
-                        await _retry.throttle.wait(track_url)
-                        resp = await client.get(track_url)
-                        resp.raise_for_status()
-                        return resp.json()
+                async def _get() -> dict[str, Any]:
+                    await _retry.throttle.wait(track_url)
+                    resp = await client.get(track_url, timeout=self._timeout)
+                    resp.raise_for_status()
+                    return resp.json()
 
-                    payload = await retry_async(
-                        _get, describe=f"[youtube] captions {video_id}",
-                    )
+                payload = await retry_async(
+                    _get, describe=f"[youtube] captions {video_id}",
+                )
                 body = json3_events_to_body(payload)
                 if body:
                     subtitle_md = subtitle_body_to_markdown(

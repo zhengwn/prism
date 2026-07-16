@@ -39,9 +39,36 @@ class PrismAPIError extends Error {
   }
 }
 
+/**
+ * Loopback API token (v0.5.x). The Tauri shell generates a per-app-run
+ * token, injects it into the sidecar's env, and exposes it via the
+ * `get_sidecar_url` command; the sidecar rejects requests without it so
+ * arbitrary local processes can't drive the API. Fetched lazily once
+ * and cached (the token is stable for the whole app run, across
+ * sidecar restarts). Pure-Vite dev has no Tauri shell AND no token env
+ * on the manually-started sidecar, so both sides degrade to "no auth"
+ * together.
+ */
+type SidecarInfo = { url: string; port: number; host: string; token?: string | null };
+let sidecarTokenPromise: Promise<string | null> | null = null;
+function getSidecarToken(): Promise<string | null> {
+  if (!isTauri()) return Promise.resolve(null);
+  if (!sidecarTokenPromise) {
+    sidecarTokenPromise = invoke<SidecarInfo>("get_sidecar_url")
+      .then((info) => info.token ?? null)
+      .catch(() => null);
+  }
+  return sidecarTokenPromise;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = await getSidecarToken();
   const res = await fetch(`${SIDECAR_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { "X-Prism-Token": token } : {}),
+      ...(init?.headers ?? {}),
+    },
     ...init,
   });
   if (!res.ok) {
@@ -228,11 +255,15 @@ export const api = {
   getPendingDistillCount: () =>
     request<{ pending: number }>("/api/distill/pending-count"),
   /**
-   * POST /api/distill/redistill — re-run distillation on every item with
-   * `distilled_at IS NULL`. Use cases:
+   * POST /api/distill/redistill — start a BACKGROUND re-distill of every
+   * item with `distilled_at IS NULL`. Use cases:
    *   - user just configured a provider for the first time
    *   - user's key expired / ran out and they want a clean re-run
-   * The response's `keyInvalid` field tells the UI to stop retrying.
+   * v0.5.x: returns immediately with `background: true` and
+   * `startedPending` set (a big batch is hours of serial LLM calls — no
+   * HTTP request should sit on that). Live counters and the final
+   * outcome (including a mid-run key-invalid, via `lastError`) come
+   * through the distill progress stream / GET /api/distill/status.
    */
   redistill: () =>
     request<{
@@ -242,6 +273,7 @@ export const api = {
       keyInvalid: boolean;
       error?: string;
       sampleFailures: string[];
+      background: boolean;
     }>("/api/distill/redistill", { method: "POST" }),
   /**
    * GET /api/distill/status — one-shot snapshot of the current distill
@@ -346,23 +378,35 @@ export const api = {
   subscribeDistillProgress(
     onProgress: (snap: DistillProgress) => void,
   ): () => void {
-    const url = `${SIDECAR_BASE}/api/distill/status/stream`;
-    const es = new EventSource(url);
-    es.onmessage = (ev) => {
-      try {
-        const snap = JSON.parse(ev.data) as DistillProgress;
-        onProgress(snap);
-      } catch (err) {
-        console.error("[prism] malformed distill progress event:", err, ev.data);
-      }
+    // EventSource cannot set custom headers, so the loopback token
+    // rides in the query string (the sidecar's auth middleware accepts
+    // either). Token fetch is async — the stream opens right after it
+    // resolves; `closed` covers an unmount racing that resolution.
+    let es: EventSource | null = null;
+    let closed = false;
+    void getSidecarToken().then((token) => {
+      if (closed) return;
+      const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+      es = new EventSource(`${SIDECAR_BASE}/api/distill/status/stream${qs}`);
+      es.onmessage = (ev) => {
+        try {
+          const snap = JSON.parse(ev.data) as DistillProgress;
+          onProgress(snap);
+        } catch (err) {
+          console.error("[prism] malformed distill progress event:", err, ev.data);
+        }
+      };
+      es.onerror = () => {
+        // EventSource auto-reconnects. We don't need to do anything
+        // here; the next `onmessage` will resume. Logging once is
+        // enough to make a stuck stream debuggable.
+        console.warn("[prism] distill progress stream error; EventSource will retry");
+      };
+    });
+    return () => {
+      closed = true;
+      es?.close();
     };
-    es.onerror = () => {
-      // EventSource auto-reconnects. We don't need to do anything
-      // here; the next `onmessage` will resume. Logging once is
-      // enough to make a stuck stream debuggable.
-      console.warn("[prism] distill progress stream error; EventSource will retry");
-    };
-    return () => es.close();
   },
 };
 

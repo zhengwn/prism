@@ -233,6 +233,7 @@
       "description": "当前有 {{count}} 条等待蒸馏。配了新 key、或者之前蒸馏失败时，用这个手动跑一遍。",
       "button": "立即重蒸馏",
       "running": "蒸馏中…",
+      "started": "已开始后台重蒸馏 {{started}} 条，进度见收件箱顶部进度条。",
       "result": "完成：成功 {{distilled}} 条，失败 {{failed}} 条（共 {{started}} 条）。",
       "keyInvalidTitle": "LLM 服务商拒绝了你的 API key",
       "keyInvalidHint": "key 可能过期、欠费或被吊销了。请在「AI 提炼」区块更新 key，然后重试。"

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Trans } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
@@ -26,6 +26,7 @@ import {
   EyeOff,
   Bell,
 } from "lucide-react";
+import { useDistillProgress } from "@/hooks/useDistillProgress";
 import { useTheme } from "@/hooks/useTheme";
 import type { Theme } from "@/lib/theme";
 import { useLanguage } from "@/hooks/useLanguage";
@@ -402,6 +403,16 @@ function AiSection() {
   const [clearKey, setClearKey] = useState(false);
   const [feedback, setFeedback] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
+  // Unmount guard for the manual-sync poll loop below: the job keeps
+  // running server-side, we just stop hammering the API for a UI that
+  // is no longer on screen.
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+
   // Hydrate the form when the loaded config first arrives. After that the
   // form is owned by local state so the user can edit freely.
   useEffect(() => {
@@ -574,14 +585,39 @@ function AiSection() {
     },
   });
 
+  // v0.2b made /api/sync asynchronous: the POST returns immediately with
+  // status="running" and itemsNew=0 while the pipeline runs in the
+  // background. Poll the job until it settles (same pattern as
+  // InboxPage's handleSync) so the feedback shows the real counters —
+  // the pre-fix code toasted the initial response, which always read
+  // "0 new / 0 distilled".
   const syncMut = useMutation({
-    mutationFn: () => api.syncAll(),
+    mutationFn: async () => {
+      const initial = await api.syncAll();
+      const POLL_MS = 500;
+      const deadline = Date.now() + 5 * 60_000;
+      let final = initial;
+      while (final.status === "running" && Date.now() < deadline && aliveRef.current) {
+        await new Promise<void>((r) => window.setTimeout(r, POLL_MS));
+        final = await api.getSyncStatus(initial.jobId);
+      }
+      return final;
+    },
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ["items"] });
       qc.invalidateQueries({ queryKey: ["sources"] });
+      if (r.status === "error") {
+        setFeedback({ kind: "error", text: t("inbox.syncError") });
+        return;
+      }
       setFeedback({
         kind: "success",
-        text: t("inbox.syncResult", { new: r.itemsNew, distilled: r.itemsDistilled }),
+        text:
+          r.status === "running"
+            ? // Poll deadline hit — the job is still grinding in the
+              // background; don't fake a completed result.
+              t("inbox.syncStillRunning")
+            : t("inbox.syncResult", { new: r.itemsNew, distilled: r.itemsDistilled }),
       });
       window.setTimeout(() => setFeedback(null), 3_000);
     },
@@ -856,24 +892,29 @@ function RedistillBlock() {
     | null
   >(null);
 
+  // v0.5.x: the batch runs in the sidecar as a BACKGROUND task — the
+  // POST returns immediately with startedPending set. Live counters and
+  // the final outcome come from the shared distill progress stream
+  // (the same source the inbox progress bar renders).
+  const progress = useDistillProgress();
+  // Whether THIS block kicked off a run and is waiting for its end.
+  // The progress store is shared with sync runs, so without the gate a
+  // finishing sync would render a bogus "redistill result" here.
+  const awaitingRun = useRef(false);
+  // The end-of-run detector must have SEEN the run in a running state
+  // first — right after the POST resolves, the latest snapshot may
+  // still be a stale finished-run frame from earlier.
+  const sawRunning = useRef(false);
+
   const redistillMut = useMutation({
     mutationFn: () => api.redistill(),
     onSuccess: (r) => {
-      qc.invalidateQueries({ queryKey: ["items"] });
-      qc.invalidateQueries({ queryKey: ["distillPending"] });
-      void refetchPending();
-      if (r.keyInvalid) {
-        setFeedback({ kind: "keyInvalid", text: r.error ?? t("settings.redistill.keyInvalidTitle") });
-      } else {
-        setFeedback({
-          kind: r.failed > 0 ? "error" : "success",
-          text: t("settings.redistill.result", {
-            distilled: r.distilled,
-            failed: r.failed,
-            started: r.startedPending,
-          }),
-        });
-      }
+      awaitingRun.current = true;
+      sawRunning.current = false;
+      setFeedback({
+        kind: "success",
+        text: t("settings.redistill.started", { started: r.startedPending }),
+      });
     },
     onError: (e) => {
       console.error("[prism] redistill failed:", e);
@@ -881,8 +922,48 @@ function RedistillBlock() {
     },
   });
 
+  // Watch the shared progress stream for the end of OUR run, then
+  // surface the real counters (and the key-invalid outcome, which now
+  // arrives mid-run via the progress store's lastError).
+  useEffect(() => {
+    if (!awaitingRun.current) return;
+    if (progress.isRunning) {
+      sawRunning.current = true;
+      return;
+    }
+    if (!sawRunning.current) return;
+    awaitingRun.current = false;
+    sawRunning.current = false;
+    qc.invalidateQueries({ queryKey: ["items"] });
+    qc.invalidateQueries({ queryKey: ["distillPending"] });
+    void refetchPending();
+    if (progress.lastError?.startsWith("key_invalid")) {
+      setFeedback({ kind: "keyInvalid", text: progress.lastError });
+    } else {
+      setFeedback({
+        kind: progress.failed > 0 ? "error" : "success",
+        text: t("settings.redistill.result", {
+          distilled: progress.distilled,
+          failed: progress.failed,
+          started: progress.pending,
+        }),
+      });
+    }
+  }, [
+    progress.isRunning,
+    progress.lastError,
+    progress.distilled,
+    progress.failed,
+    progress.pending,
+    qc,
+    refetchPending,
+    t,
+  ]);
+
   const pendingN = pending?.pending ?? 0;
-  const isRunning = redistillMut.isPending;
+  // Disabled while the kick-off POST is in flight OR the background
+  // batch is grinding (the server would 409 a second run anyway).
+  const isRunning = redistillMut.isPending || progress.isRunning;
 
   return (
     <div className="space-y-2">

@@ -38,6 +38,11 @@ vi.mock("@/lib/api", () => ({
     getPendingDistillCount: vi.fn(),
     redistill: vi.fn(),
     syncAll: vi.fn(),
+    // RedistillBlock mounts useDistillProgress(): seed via getDistillStatus()
+    // then subscribe. Pending seed keeps it at the idle snapshot; the
+    // subscription is a no-op that returns an unsubscribe fn.
+    getDistillStatus: vi.fn(() => new Promise(() => {})),
+    subscribeDistillProgress: vi.fn(() => () => {}),
   },
   isTauri: () => false,
   SIDECAR_BASE: "http://127.0.0.1:8765",

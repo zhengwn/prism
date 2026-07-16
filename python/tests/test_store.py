@@ -251,11 +251,11 @@ async def test_webhook_auto_disables_at_max_fails(initialized):
 
 
 @pytest.mark.asyncio
-async def test_schema_version_is_v5_with_webhooks_and_item_tags(initialized):
+async def test_schema_version_is_v6_with_webhooks_and_item_tags(initialized):
     from prism_sidecar.db import get_db
     db = get_db()
     cur = await db.execute("SELECT value FROM _meta WHERE key = 'schema_version'")
-    assert (await cur.fetchone())[0] == "5"
+    assert (await cur.fetchone())[0] == "6"
     for table in ("webhooks", "item_tags"):
         cur = await db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name=?",

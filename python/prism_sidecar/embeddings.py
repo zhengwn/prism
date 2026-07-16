@@ -24,6 +24,7 @@ from typing import Literal
 
 import httpx
 
+from prism_sidecar import _http
 from prism_sidecar import settings as _settings
 
 log = logging.getLogger(__name__)
@@ -72,28 +73,32 @@ async def embed_texts(texts: list[str], *, kind: EmbedKind) -> list[list[float]]
     url = f"{_base_url()}/embeddings"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     out: list[list[float]] = []
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        for i in range(0, len(texts), _BATCH):
-            batch = texts[i : i + _BATCH]
-            try:
-                resp = await client.post(
-                    url,
-                    headers=headers,
-                    json={"model": EMBED_MODEL, "texts": batch, "type": kind},
-                )
-                resp.raise_for_status()
-                body = resp.json()
-            except httpx.HTTPError as e:
-                raise EmbeddingError(f"MiniMax embeddings request failed: {e}") from e
+    # Shared per-loop client (prism_sidecar._http) — embed_item runs once
+    # per distilled item on the sync hot path, and each call used to pay
+    # for a fresh connection pool + TLS handshake.
+    client = _http.get_client()
+    for i in range(0, len(texts), _BATCH):
+        batch = texts[i : i + _BATCH]
+        try:
+            resp = await client.post(
+                url,
+                headers=headers,
+                json={"model": EMBED_MODEL, "texts": batch, "type": kind},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+        except httpx.HTTPError as e:
+            raise EmbeddingError(f"MiniMax embeddings request failed: {e}") from e
 
-            status = (body.get("base_resp") or {}).get("status_code")
-            if status not in (0, None):
-                msg = (body.get("base_resp") or {}).get("status_msg", "unknown")
-                raise EmbeddingError(f"MiniMax embeddings error {status}: {msg}")
-            vectors = body.get("vectors")
-            if not isinstance(vectors, list) or len(vectors) != len(batch):
-                raise EmbeddingError("MiniMax embeddings returned an unexpected shape")
-            out.extend(vectors)
+        status = (body.get("base_resp") or {}).get("status_code")
+        if status not in (0, None):
+            msg = (body.get("base_resp") or {}).get("status_msg", "unknown")
+            raise EmbeddingError(f"MiniMax embeddings error {status}: {msg}")
+        vectors = body.get("vectors")
+        if not isinstance(vectors, list) or len(vectors) != len(batch):
+            raise EmbeddingError("MiniMax embeddings returned an unexpected shape")
+        out.extend(vectors)
     return out
 
 

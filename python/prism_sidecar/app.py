@@ -13,19 +13,21 @@ Major changes from v0.1:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
+import os
 import sys
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from prism_sidecar import __version__, scheduler, search, settings, store
+from prism_sidecar import __version__, _http, scheduler, search, settings, store
 from prism_sidecar.progress import progress_store
 from prism_sidecar.config import (
     DAILY_SYNC_ENABLED,
@@ -150,7 +152,16 @@ async def lifespan(app: FastAPI):
         # progress we're trying to save. See orchestrator.drain_inflight.
         scheduler.shutdown_scheduler()
         await orchestrator.drain_inflight(SHUTDOWN_GRACE_SEC)
+        # v0.5.x: redistill runs as a background task — cancel it before
+        # closing the DB. Each distilled item commits its own write, so
+        # cancellation loses at most the one item currently in flight.
+        if _redistill_task is not None and not _redistill_task.done():
+            _redistill_task.cancel()
+            await asyncio.gather(_redistill_task, return_exceptions=True)
         await close_db()
+        # Close the shared httpx client last — fetch/distill work above
+        # may still have been flushing requests through it.
+        await _http.aclose_current()
 
 
 # ---- App -----------------------------------------------------------------
@@ -175,6 +186,39 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _require_api_token(request: Request, call_next):
+    """Loopback auth (v0.5.x).
+
+    CORS only protects against *browsers* — any local process could
+    otherwise create/delete sources or register a data-exfiltrating
+    webhook on 127.0.0.1:8765. When the Tauri shell spawns us it
+    injects a per-app-run random token as PRISM_API_TOKEN (see
+    sidecar.rs) and sends it back on every request; we require it here.
+
+    Details:
+      * Token read from env PER REQUEST (cheap dict lookup) so tests
+        can monkeypatch os.environ and dev runs (`uv run`, no env set)
+        keep the check off entirely.
+      * Accepted as the `X-Prism-Token` header, or `?token=` for the
+        SSE endpoint — EventSource cannot set custom headers.
+      * OPTIONS passes through: CORS preflights never carry custom
+        headers, and this middleware wraps the CORSMiddleware (added
+        above = inner), so it sees the preflight first.
+      * /health stays open: counts + version only, and keeping it
+        token-free preserves curl-level debuggability.
+    """
+    token = os.environ.get("PRISM_API_TOKEN")
+    if not token or request.method == "OPTIONS" or request.url.path == "/health":
+        return await call_next(request)
+    supplied = request.headers.get("x-prism-token") or request.query_params.get("token")
+    if not supplied or not hmac.compare_digest(supplied, token):
+        return JSONResponse(
+            {"detail": "missing or invalid API token"}, status_code=401
+        )
+    return await call_next(request)
 
 
 # ---- Health --------------------------------------------------------------
@@ -324,8 +368,15 @@ async def search_status() -> dict:
 
 
 @app.post("/api/search/reindex")
-async def search_reindex(batch_limit: int | None = Query(None, ge=1, le=1000)) -> dict:
-    """Embed every distilled item missing a vector (best-effort, idempotent)."""
+async def search_reindex(batch_limit: int = Query(500, ge=1, le=1000)) -> dict:
+    """Embed distilled items missing a vector (best-effort, idempotent).
+
+    Default batch of 500 keeps one request bounded (~16 embedding API
+    calls); the response's `remaining` count tells the client whether
+    another pass is needed, and the UI's reindex button stays visible
+    until it hits zero. (Unbounded used to be the default, which let a
+    big backlog pin the HTTP request for minutes.)
+    """
     return await search.reindex_missing(batch_limit=batch_limit)
 
 
@@ -442,6 +493,12 @@ class RedistillResponse(BaseModel):
     key_invalid: bool
     error: Optional[str] = None
     sample_failures: list[str] = []
+    # v0.5.x: the batch runs as a background task; the POST returns
+    # immediately with started_pending set and everything else zeroed.
+    # Clients watch /api/distill/status (or the SSE stream) for the
+    # live counters and the final outcome (lastError carries
+    # "key_invalid: …" when the provider rejected the key mid-run).
+    background: bool = False
 
 
 @app.get("/api/distill/pending-count", response_model_by_alias=True)
@@ -568,9 +625,46 @@ async def distill_status_stream():
     )
 
 
+# Strong reference to the in-flight redistill background task, both to
+# keep it from being GC'd mid-run and so the lifespan shutdown can
+# cancel it before closing the DB.
+_redistill_task: asyncio.Task | None = None
+
+
+async def _redistill_background(batch_limit: int) -> None:
+    """Run the redistill batch as a background task.
+
+    Owns the progress_store end framing and the `redistill_running`
+    flag; the route handler only does the begin framing (so the SSE
+    consumers see the run the moment the POST returns).
+    """
+    error: Optional[str] = None
+    try:
+        result = await redistill_all_pending(batch_limit=batch_limit)
+        error = result.error
+        log.info(
+            "[redistill-bg] finished: distilled=%d failed=%d key_invalid=%s",
+            result.distilled, result.failed, result.key_invalid,
+        )
+    except asyncio.CancelledError:
+        # Sidecar shutdown mid-batch. Each distilled item already
+        # committed its own DB write and the progress store dies with
+        # the process, so there is nothing to persist — just stop.
+        orchestrator.redistill_running = False
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.exception("[redistill-bg] batch crashed")
+        error = f"redistill crashed: {exc!r}"
+    orchestrator.redistill_running = False
+    await progress_store.end_run(
+        finished_at_iso=datetime.now(timezone.utc).isoformat(),
+        error=error,
+    )
+
+
 @app.post("/api/distill/redistill", response_model=RedistillResponse, response_model_by_alias=True)
 async def trigger_redistill(batch_limit: int = Query(1000, ge=1, le=5000)) -> RedistillResponse:
-    """Re-run distillation on every item that still has `distilled_at IS NULL`.
+    """Start a background re-distill of every item with `distilled_at IS NULL`.
 
     Use cases:
       - The user just configured an API key for the first time and wants
@@ -578,9 +672,11 @@ async def trigger_redistill(batch_limit: int = Query(1000, ge=1, le=5000)) -> Re
       - The user's key expired / ran out and they want a clean re-run
         after fixing it.
 
-    If the configured key is invalid, the response will have
-    `key_invalid: true` and we'll stop the batch early so we don't
-    burn credit on a dead key.
+    v0.5.x: the batch runs as a BACKGROUND task — a 1000-item batch is
+    hours of serial LLM calls, which no HTTP request should sit on. The
+    response returns immediately with `background=true` and
+    `started_pending` set; progress (including a mid-run key_invalid
+    outcome) streams through /api/distill/status[/stream].
     """
     # v0.2a+: check the *active* provider (DeepSeek or MiniMax). The
     # legacy v0.1 `is_distiller_configured()` helper only checks
@@ -597,34 +693,40 @@ async def trigger_redistill(batch_limit: int = Query(1000, ge=1, le=5000)) -> Re
     # run's progress state (and prematurely close its SSE framing).
     if orchestrator.inflight_jobs or orchestrator.redistill_running:
         raise HTTPException(409, "a sync or redistill is already running")
-    # We know the `pending` count up-front for redistill: it's the
-    # number of items in the queue right now. Use that to drive a
-    # proper determinate progress bar (X / pending) in the UI.
-    from prism_sidecar.pipeline.distill import list_pending_distill_ids
-
-    pending_ids = await list_pending_distill_ids()
-    capped_pending = min(len(pending_ids), batch_limit)
+    # Claim the slot IMMEDIATELY — same synchronous block as the check,
+    # no await in between, so two concurrent requests can't both pass.
     orchestrator.redistill_running = True
-    await progress_store.begin_run(
-        pending=capped_pending,
-        started_at_iso=datetime.now(timezone.utc).isoformat(),
-    )
-    result = None
     try:
-        result = await redistill_all_pending(batch_limit=batch_limit)
-    finally:
+        # We know the `pending` count up-front for redistill: it's the
+        # number of items in the queue right now. Use that to drive a
+        # proper determinate progress bar (X / pending) in the UI.
+        pending_ids = await list_pending_distill_ids()
+        capped_pending = min(len(pending_ids), batch_limit)
+        await progress_store.begin_run(
+            pending=capped_pending,
+            started_at_iso=datetime.now(timezone.utc).isoformat(),
+        )
+    except BaseException:
+        # Failed before the batch even started — release the slot,
+        # close the progress framing we may have opened, and re-raise.
         orchestrator.redistill_running = False
         await progress_store.end_run(
             finished_at_iso=datetime.now(timezone.utc).isoformat(),
-            error=result.error if result is not None else None,
+            error="redistill failed to start",
         )
+        raise
+
+    global _redistill_task
+    _redistill_task = asyncio.create_task(_redistill_background(batch_limit))
+
     return RedistillResponse(
-        started_pending=result.started_pending,
-        distilled=result.distilled,
-        failed=result.failed,
-        key_invalid=result.key_invalid,
-        error=result.error,
-        sample_failures=result.sample_failures,
+        started_pending=capped_pending,
+        distilled=0,
+        failed=0,
+        key_invalid=False,
+        error=None,
+        sample_failures=[],
+        background=True,
     )
 
 

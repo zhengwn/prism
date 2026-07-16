@@ -42,7 +42,14 @@ PRISM_DATA_DIR = _config.PRISM_DATA_DIR
 #     distiller's auto `items.tags_zh`. Pure additive (CREATE TABLE IF NOT
 #     EXISTS in SCHEMA_SQL is idempotent on every init, like webhooks was),
 #     so no dedicated migration step is needed — only the version bump.
-SCHEMA_VERSION = 5
+# v6: add `items.content` — the raw fetched content (article body /
+#     subtitle markdown), truncated at store time. Before v6 only a
+#     280-char summary placeholder survived the initial insert, so a
+#     redistill re-prompted the LLM with almost nothing — a video item
+#     whose first distillation had a 20k-char subtitle would redistill
+#     from its title alone. Additive ALTER; the column is nullable and
+#     old rows simply keep the pre-v6 (lossy) redistill behaviour.
+SCHEMA_VERSION = 6
 
 
 SCHEMA_SQL = """
@@ -76,6 +83,7 @@ CREATE TABLE IF NOT EXISTS items (
     content_type TEXT NOT NULL,
     duration_sec INTEGER,
     metadata_json TEXT,
+    content TEXT,
     FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
 );
 
@@ -298,6 +306,15 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
                 "summary_zh, key_points_zh, tags_zh) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (r[0], *(segment_cjk(v) for v in r[1:])),
             )
+
+    # v6: raw content column for redistill quality. Guarded by a
+    # PRAGMA check (not the version number) so it's idempotent for
+    # both paths: fresh installs already have the column via
+    # SCHEMA_SQL's CREATE TABLE, upgrades get it via ALTER.
+    cur = await db.execute("PRAGMA table_info(items)")
+    existing_cols = {row[1] for row in await cur.fetchall()}
+    if "content" not in existing_cols:
+        await db.execute("ALTER TABLE items ADD COLUMN content TEXT")
 
     # Step 3: bump schema_version to the current target.
     await db.execute(

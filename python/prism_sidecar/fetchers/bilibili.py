@@ -28,14 +28,24 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-import httpx
-
+from prism_sidecar import _http
 from prism_sidecar.config import FETCH_TIMEOUT_SEC
+from prism_sidecar.fetchers import _retry
 from prism_sidecar.fetchers._subtitle import format_timestamp, subtitle_body_to_markdown
 from prism_sidecar.fetchers.base import FetchError, Fetcher, RawItem
 from prism_sidecar.models import ContentType, Source, SourceKind
 
 log = logging.getLogger(__name__)
+
+# Representative URL for the B 站 API host, used to key the shared
+# per-host throttle (`_retry.throttle`). The bilibili_api library makes
+# its own HTTP calls internally, so we can't throttle at the transport —
+# instead we `wait()` on this host before every library call, which
+# makes the process-wide bilibili.com interval (see _retry._HOST_INTERVALS)
+# actually apply to this fetcher. Before v0.5.x the interval was
+# configured but never enforced here — only the fetcher's own
+# inter-video sleep stood between us and the rate limit.
+_BILI_API_URL = "https://api.bilibili.com/"
 
 
 # --- bilibili_api-python import guarded so tests can monkeypatch -----
@@ -367,6 +377,7 @@ class BilibiliFetcher:
     async def _fetch_up(self, *, mid: str, source: Source) -> list[RawItem]:
         log.info("[bilibili] UP mode: source=%s mid=%s", source.id, mid)
         try:
+            await _retry.throttle.wait(_BILI_API_URL)
             u = _bili_user.User(uid=int(mid))  # type: ignore[union-attr]
             page = await u.get_videos(pn=1, ps=self._ps)
         except Exception as exc:  # noqa: BLE001
@@ -426,8 +437,11 @@ class BilibiliFetcher:
                     "[bilibili] UP mid=%s video %s failed: %s",
                     mid, bvid, exc,
                 )
-            # Be polite to B 站.
-            if raw_items and self._sleep > 0:
+            # Be polite to B 站 — including after a FAILED video (the
+            # pre-fix `if raw_items and …` guard skipped the sleep
+            # whenever the first video errored, which is exactly when
+            # backing off matters most).
+            if self._sleep > 0:
                 await asyncio.sleep(self._sleep)
 
         log.info(
@@ -463,6 +477,7 @@ class BilibiliFetcher:
         # Step 1: get_info — title / desc / pubdate / cid / duration.
         info: dict[str, Any] | None = None
         try:
+            await _retry.throttle.wait(_BILI_API_URL)
             v = _bili_video.Video(bvid=bvid)  # type: ignore[union-attr]
             info = await v.get_info()
         except Exception as exc:  # noqa: BLE001
@@ -488,6 +503,7 @@ class BilibiliFetcher:
                 # get_subtitle returns the full player_info dict
                 # ``{"subtitles": [...], "subtitles_info": ..., ...}`` —
                 # we only want the ``subtitles`` list.
+                await _retry.throttle.wait(_BILI_API_URL)
                 raw_tracks = await _bili_video.Video(bvid=bvid).get_subtitle(cid=cid)  # type: ignore[union-attr]
                 if isinstance(raw_tracks, dict):
                     tracks = raw_tracks.get("subtitles") or []
@@ -509,19 +525,23 @@ class BilibiliFetcher:
 
             if subtitle_track_url:
                 try:
-                    async with httpx.AsyncClient(
+                    # Shared client + per-host throttle (hdslb.com is in
+                    # _retry._HOST_INTERVALS) instead of a fresh client
+                    # per video.
+                    client = _http.get_client()
+                    await _retry.throttle.wait(subtitle_track_url)
+                    resp = await client.get(
+                        subtitle_track_url,
                         timeout=self._timeout,
-                        follow_redirects=True,
                         headers={
                             "User-Agent": (
                                 "Mozilla/5.0 (Macintosh; Intel Mac OS X "
                                 "10_15_7) AppleWebKit/537.36"
                             ),
                         },
-                    ) as client:
-                        resp = await client.get(subtitle_track_url)
-                        resp.raise_for_status()
-                        body_json = resp.json()
+                    )
+                    resp.raise_for_status()
+                    body_json = resp.json()
                     body = body_json.get("body") if isinstance(body_json, dict) else None
                     if isinstance(body, list):
                         # tag every cue with the picked track's provenance

@@ -14,8 +14,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import feedparser
-import httpx
 
+from prism_sidecar import _http
 from prism_sidecar.config import (
     FETCH_LOOKBACK_DAYS,
     FETCH_MAX_RETRIES,
@@ -133,28 +133,30 @@ class RSSFetcher:
         self._lookback = timedelta(days=lookback_days)
 
     async def _download(self, url: str) -> bytes:
-        """GET with retry (shared `retry_async` helper). Returns body bytes."""
-        async with httpx.AsyncClient(
-            timeout=self._timeout,
-            follow_redirects=True,
-            headers={
-                "User-Agent": "PrismSidecar/0.2 (+https://github.com/zhengwn/prism)",
-                "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8",
-            },
-        ) as client:
+        """GET with retry (shared `retry_async` helper). Returns body bytes.
 
-            async def _get() -> bytes:
-                await _retry.throttle.wait(url)
-                resp = await client.get(url)
-                resp.raise_for_status()
-                return resp.content
+        Uses the process-shared client (`prism_sidecar._http`) with
+        per-request headers/timeout instead of building a client (and a
+        connection pool) per download.
+        """
+        client = _http.get_client()
+        headers = {
+            "User-Agent": "PrismSidecar/0.2 (+https://github.com/zhengwn/prism)",
+            "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8",
+        }
 
-            return await retry_async(
-                _get,
-                max_retries=self._max_retries,
-                backoff_base=self._retry_backoff,
-                describe=f"[rss] {url}",
-            )
+        async def _get() -> bytes:
+            await _retry.throttle.wait(url)
+            resp = await client.get(url, headers=headers, timeout=self._timeout)
+            resp.raise_for_status()
+            return resp.content
+
+        return await retry_async(
+            _get,
+            max_retries=self._max_retries,
+            backoff_base=self._retry_backoff,
+            describe=f"[rss] {url}",
+        )
 
     async def fetch(
         self, source: Source, *, lookback_days: int | None = None

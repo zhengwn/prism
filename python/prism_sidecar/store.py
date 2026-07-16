@@ -273,7 +273,11 @@ async def create_source(
         ),
     )
     await db.commit()
-    return new
+    # Re-read so the response carries the DB truth — most notably the
+    # `created_at` the INSERT just generated (the in-memory `new` model
+    # had None, so POST /api/sources returned createdAt=null).
+    created = await get_source(new.id)
+    return created if created is not None else new
 
 
 async def patch_source(
@@ -603,11 +607,21 @@ async def item_exists_by_url(url: str) -> bool:
     return (await cur.fetchone()) is not None
 
 
+# Cap for the stored raw content (schema v6). Big enough for any real
+# subtitle transcript (a 2h video's cues run ~60-100k chars); the cap only
+# guards against a pathological feed embedding megabytes in one entry.
+_MAX_RAW_CONTENT_LEN = 200_000
+
+
 async def insert_item_from_raw(source: Source, raw: RawItem) -> str:
     """Insert a fresh item from a RawItem. Returns the new item id.
 
     The item is stored with empty zh fields; the distiller fills them in
     a separate call (so a failed distiller doesn't lose the raw data).
+
+    Schema v6: the raw content itself is persisted (truncated) so a later
+    redistill can re-prompt from the full source text instead of the
+    280-char summary placeholder — see `get_item_content`.
     """
     db = get_db()
     item_id = _new_id("itm")
@@ -617,9 +631,10 @@ async def insert_item_from_raw(source: Source, raw: RawItem) -> str:
         INSERT INTO items (
             id, source_id, url, title_en, title_zh, summary_en, summary_zh,
             key_points_zh, tags_zh, author, published_at, fetched_at,
-            distilled_at, status, content_type, duration_sec, metadata_json
+            distilled_at, status, content_type, duration_sec, metadata_json,
+            content
         ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?,
-                  NULL, 'unread', ?, ?, ?)
+                  NULL, 'unread', ?, ?, ?, ?)
         """,
         (
             item_id,
@@ -632,6 +647,7 @@ async def insert_item_from_raw(source: Source, raw: RawItem) -> str:
             raw.content_type.value,
             raw.duration_sec,
             json.dumps(raw.metadata or {}),
+            (raw.content or "")[:_MAX_RAW_CONTENT_LEN] or None,
         ),
     )
     # Keep an English summary placeholder if content exists, so the UI has
@@ -647,6 +663,19 @@ async def insert_item_from_raw(source: Source, raw: RawItem) -> str:
     await _fts_upsert(db, item_id)
     await db.commit()
     return item_id
+
+
+async def get_item_content(item_id: str) -> Optional[str]:
+    """The stored raw content for one item (schema v6), or None.
+
+    Deliberately NOT part of KnowledgeItem / the REST list responses —
+    the column can be 100k+ chars per row and the only consumer is the
+    redistill pipeline, which fetches it per item on demand.
+    """
+    db = get_db()
+    cur = await db.execute("SELECT content FROM items WHERE id = ?", (item_id,))
+    row = await cur.fetchone()
+    return row[0] if row and row[0] else None
 
 
 async def update_item_distilled(item_id: str, distilled: DistilledItem) -> None:
@@ -1182,6 +1211,7 @@ __all__ = [
     "get_item",
     "item_exists_by_url",
     "insert_item_from_raw",
+    "get_item_content",
     "update_item_distilled",
     "update_item_status",
     "create_job",

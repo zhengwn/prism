@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 import aiosqlite
+import pytest
 import pytest_asyncio
 
 
@@ -60,11 +61,36 @@ async def isolated_data_dir(monkeypatch, tmp_path: Path) -> AsyncIterator[Path]:
 
     yield data_dir
 
-    # Cleanup: shut down the shared aiosqlite connection and remove the
+    # Cleanup: shut down the shared aiosqlite connection, close this
+    # loop's shared httpx client (prism_sidecar._http), and remove the
     # tmp dir so tests don't leak state.
     try:
         await dbmod.close_db()
     except Exception:
         pass
+    try:
+        from prism_sidecar import _http
+        await _http.aclose_current()
+    except Exception:
+        pass
     if data_dir.exists():
         shutil.rmtree(data_dir, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _fast_host_throttle():
+    """Zero out the per-host throttle so fetcher tests never really sleep.
+
+    The YouTube / Bilibili fetchers call `_retry.throttle.wait(...)`
+    before every network hit. With the production intervals (1-3s per
+    host) the fetcher suites would spend most of their wall time
+    sleeping — the YouTube tests actually did, silently, before this
+    fixture existed. Restore a fresh production-config singleton after
+    each test so throttle-behaviour tests that build their own instance
+    are unaffected.
+    """
+    from prism_sidecar.fetchers import _retry
+
+    _retry.reset_throttle_for_tests(intervals=[], default_interval=0.0)
+    yield
+    _retry.reset_throttle_for_tests()

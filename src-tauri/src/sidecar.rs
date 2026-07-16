@@ -28,7 +28,7 @@
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 
 use serde::Serialize;
@@ -40,6 +40,34 @@ use crate::secrets::{LlmConfigInput, LlmConfigResponse};
 pub const SIDECAR_HOST: &str = "127.0.0.1";
 pub const SIDECAR_PORT: u16 = 8765;
 pub const SIDECAR_URL: &str = "http://127.0.0.1:8765";
+
+/// Env var carrying the loopback API token to the sidecar (see
+/// `api_token`). The Python side's auth middleware reads it at request
+/// time; without it (dev `uv run`, pytest) the check is off.
+pub const ENV_PRISM_API_TOKEN: &str = "PRISM_API_TOKEN";
+
+/// Per-app-run random token gating the sidecar's HTTP API.
+///
+/// CORS only protects against browsers — before this token, ANY local
+/// process could hit 127.0.0.1:8765 and create/delete sources or
+/// register a data-exfiltrating webhook. The token is generated once
+/// per Tauri process, injected into every sidecar spawn's env, and
+/// handed to the webview via `get_sidecar_url` so the frontend can
+/// send it as the `X-Prism-Token` header (or `?token=` for SSE).
+/// Restarting the sidecar reuses the same token, so the frontend never
+/// needs to refresh it mid-session.
+static API_TOKEN: OnceLock<String> = OnceLock::new();
+
+pub fn api_token() -> &'static str {
+    API_TOKEN.get_or_init(|| {
+        use base64::Engine as _;
+        use rand::RngCore;
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        // URL_SAFE_NO_PAD keeps it header- and query-string-safe.
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    })
+}
 
 /// File the Tauri shell writes next to the sidecar's data dir. The sidecar
 /// reads this on startup to know which provider is active without having
@@ -63,6 +91,9 @@ pub struct SidecarInfo {
     pub url: String,
     pub port: u16,
     pub host: String,
+    /// Loopback API token — the frontend sends this on every sidecar
+    /// request (`X-Prism-Token`). See `api_token` for the threat model.
+    pub token: String,
 }
 
 #[tauri::command]
@@ -71,6 +102,7 @@ pub fn get_sidecar_url() -> SidecarInfo {
         url: SIDECAR_URL.to_string(),
         port: SIDECAR_PORT,
         host: SIDECAR_HOST.to_string(),
+        token: api_token().to_string(),
     }
 }
 
@@ -164,6 +196,10 @@ fn build_command<R: Runtime>(
 
     // Always tell the sidecar which provider is active.
     cmd.env(secrets::ENV_PRISM_ACTIVE_PROVIDER, provider);
+    // Loopback auth: the sidecar rejects requests without this token
+    // (any local process could otherwise drive the API). Same token for
+    // every respawn within this app run — see `api_token`.
+    cmd.env(ENV_PRISM_API_TOKEN, api_token());
 
     // Per-provider env injection.
     match provider {
@@ -352,6 +388,28 @@ fn kill_process_tree(pid: u32, context: &str) {
                 );
             }
         }
+        // ALSO SIGTERM the direct child itself. `pkill -P` signals only
+        // pid's *children* — which covers `uv run` and the PyInstaller
+        // onefile bootloader (the real server is their child), but when
+        // the spawned process IS the server (onedir build, or
+        // PRISM_SIDECAR_BIN pointing straight at a uvicorn binary) the
+        // graceful path never fired: the server saw no TERM, the caller
+        // burned the full 5s grace, then SIGKILL'd it — so the Python
+        // side's drain-and-close-db shutdown never ran. A duplicate
+        // TERM in the covered cases is harmless (uv forwards it; the
+        // bootloader exits with its child).
+        match std::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status()
+        {
+            Ok(status) if status.success() => {
+                eprintln!("[prism] sent SIGTERM to sidecar pid={pid} ({context})");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("[prism] kill -TERM {pid} failed ({context}): {e}");
+            }
+        }
     }
     #[cfg(windows)]
     {
@@ -498,9 +556,21 @@ pub fn apply_llm_config<R: Runtime>(
         return Err(format!("unknown provider: {}", config.provider));
     }
 
-    // 1. API key (if provided and provider needs one).
-    if let Some(key) = config.api_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        secrets::write_llm_key(app, &config.provider, key)?;
+    // 1. API key. Three cases, keyed off how the frontend builds the
+    //    payload (SettingsPage saveMut):
+    //      * field absent (None)     → leave the stored key untouched
+    //      * empty / whitespace-only → explicit "clear key" — delete the slot
+    //      * non-empty               → write the new key
+    //    The empty-string case used to fall into the same filter as
+    //    "absent", which silently turned the Settings page's "清除 Key"
+    //    button into a no-op (the slot was never deleted).
+    if let Some(raw) = config.api_key.as_deref() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            secrets::delete_llm_key(app, &config.provider)?;
+        } else {
+            secrets::write_llm_key(app, &config.provider, trimmed)?;
+        }
     }
 
     // 2. Active provider pointer.

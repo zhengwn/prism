@@ -403,12 +403,33 @@ pub fn build_llm_config_response<R: Runtime>(app: &tauri::AppHandle<R>) -> LlmCo
     // `type="password"` so the mask is rendered as bullets either way.
     let key_length = key_length(app, &provider);
 
-    let model = default_model_for(&provider).map(|s| s.to_string());
+    // MiniMax supports a user override (base_url + model) persisted in
+    // the keystore's `custom` blob. Surface the *effective* values —
+    // `sidecar::build_command` injects the same blob into the child's
+    // env, so this is what actually takes effect. This used to always
+    // echo the hard-coded defaults, which made a saved override look
+    // ignored in the Settings UI even though the sidecar was using it.
+    let custom = if provider == "minimax" {
+        read_custom_config(app)
+    } else {
+        None
+    };
+
+    let model = custom
+        .as_ref()
+        .map(|c| c.model.clone())
+        .filter(|m| !m.is_empty())
+        .or_else(|| default_model_for(&provider).map(|s| s.to_string()));
 
     // Only MiniMax exposes a user-overridable base_url (its OpenAI-
     // compatible endpoint). DeepSeek uses the canonical API directly.
     let base_url = if provider == "minimax" {
-        Some(DEFAULT_MINIMAX_API_BASE.to_string())
+        Some(
+            custom
+                .map(|c| c.base_url)
+                .filter(|b| !b.is_empty())
+                .unwrap_or_else(|| DEFAULT_MINIMAX_API_BASE.to_string()),
+        )
     } else {
         None
     };

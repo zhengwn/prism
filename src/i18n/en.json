@@ -233,6 +233,7 @@
       "description": "{{count}} items waiting for distillation. Use after configuring a new API key, or when an earlier run failed.",
       "button": "Re-distill now",
       "running": "Distilling…",
+      "started": "Re-distilling {{started}} items in the background — watch the progress bar at the top of the Inbox.",
       "result": "Done: {{distilled}} distilled, {{failed}} failed (of {{started}} pending).",
       "keyInvalidTitle": "API key rejected by the LLM provider",
       "keyInvalidHint": "Your key may be expired, exhausted, or revoked. Update it in the AI section, then try again."

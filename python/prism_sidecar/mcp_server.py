@@ -406,7 +406,8 @@ async def prism_register_webhook(
     prism_set_webhook_enabled to pause one.
     """
     try:
-        webhooks.assert_safe_webhook_url(url)
+        # Async variant — keeps a slow DNS lookup off the event loop.
+        await webhooks.assert_safe_webhook_url_async(url)
     except webhooks.UnsafeWebhookURL as exc:
         raise ToolError(str(exc)) from exc
     if source_id is not None and await store.get_source(source_id) is None:

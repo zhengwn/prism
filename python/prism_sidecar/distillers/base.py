@@ -440,12 +440,15 @@ class LitellmDistiller:
             try:
                 return await self._call_with_retry(messages)
             finally:
-                self._last_call = asyncio.get_event_loop().time()
+                # get_running_loop(), not get_event_loop() — the latter is
+                # deprecated inside coroutines (3.10+) and we're always on
+                # a running loop here.
+                self._last_call = asyncio.get_running_loop().time()
 
     # ---- internals -----------------------------------------------------
 
     async def _pace(self) -> None:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         elapsed = loop.time() - self._last_call
         if elapsed < self._min_interval:
             await asyncio.sleep(self._min_interval - elapsed)

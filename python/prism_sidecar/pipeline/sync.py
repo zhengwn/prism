@@ -99,7 +99,7 @@ def _get_distiller() -> Distiller | None:
             model=cfg.get("model"),
             base_url=cfg.get("base_url"),
         )
-    except (ValueError, Exception) as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         log.warning("[sync] could not build distiller for %r: %s", provider, exc)
         return None
 
@@ -273,6 +273,10 @@ async def run_source_sync(source: Source, distiller: Distiller | None = None) ->
                     await progress_store.item_succeeded()
                 except DistillerNotConfigured:
                     # No key — stop trying for the rest of this run.
+                    # Close the progress slot item_started opened, or
+                    # the SSE stream keeps this item as in-flight
+                    # (currentTitle hangs, counters stop adding up).
+                    await progress_store.item_failed()
                     distiller = None
                 except DistillerKeyInvalid as exc:
                     # Key is dead — stop DISTILLING (don't burn what
@@ -285,6 +289,9 @@ async def run_source_sync(source: Source, distiller: Distiller | None = None) ->
                     # pending rows are recoverable via redistill.
                     stats.key_invalid = True
                     stats.error = f"key_invalid: {exc}"
+                    # Same progress closure as DistillerNotConfigured
+                    # above — the started item must resolve.
+                    await progress_store.item_failed()
                     log.error(
                         "[sync] %s: API key invalid, disabling distillation "
                         "for the rest of this run: %s",

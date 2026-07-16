@@ -14,6 +14,7 @@ host) to blunt DNS-rebinding.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import ipaddress
@@ -64,9 +65,12 @@ def _ip_is_unsafe(ip: str) -> bool:
     )
 
 
-def assert_safe_webhook_url(url: str) -> None:
-    """Raise UnsafeWebhookURL unless ``url`` is an http(s) URL whose host
-    resolves entirely to public addresses."""
+def _parse_webhook_url(url: str) -> tuple[str, Optional[int]]:
+    """Scheme + host validation shared by the sync/async checkers.
+
+    Returns ``(host, port)`` for the resolver step, or raises
+    UnsafeWebhookURL.
+    """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise UnsafeWebhookURL(
@@ -75,11 +79,11 @@ def assert_safe_webhook_url(url: str) -> None:
     host = parsed.hostname
     if not host:
         raise UnsafeWebhookURL(f"webhook url has no host: {url!r}")
-    try:
-        infos = socket.getaddrinfo(host, parsed.port or None, proto=socket.IPPROTO_TCP)
-    except socket.gaierror as exc:
-        raise UnsafeWebhookURL(f"cannot resolve webhook host {host!r}: {exc}") from exc
-    resolved = {info[4][0] for info in infos}
+    return host, parsed.port
+
+
+def _check_resolved_ips(host: str, resolved: set[str]) -> None:
+    """Raise UnsafeWebhookURL unless every resolved IP is public."""
     if not resolved:
         raise UnsafeWebhookURL(f"webhook host {host!r} resolved to nothing")
     for ip in resolved:
@@ -88,6 +92,39 @@ def assert_safe_webhook_url(url: str) -> None:
                 f"webhook host {host!r} resolves to a non-public address ({ip}); "
                 "loopback / private / link-local targets are blocked"
             )
+
+
+def assert_safe_webhook_url(url: str) -> None:
+    """Raise UnsafeWebhookURL unless ``url`` is an http(s) URL whose host
+    resolves entirely to public addresses.
+
+    Synchronous variant — ``socket.getaddrinfo`` BLOCKS. Fine from sync
+    code and tests; on the event loop use
+    :func:`assert_safe_webhook_url_async` instead, or a slow DNS lookup
+    stalls every coroutine in the process.
+    """
+    host, port = _parse_webhook_url(url)
+    try:
+        infos = socket.getaddrinfo(host, port or None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise UnsafeWebhookURL(f"cannot resolve webhook host {host!r}: {exc}") from exc
+    _check_resolved_ips(host, {info[4][0] for info in infos})
+
+
+async def assert_safe_webhook_url_async(url: str) -> None:
+    """Async variant of :func:`assert_safe_webhook_url`.
+
+    Resolves via the loop's resolver (thread-pool backed), so DNS never
+    blocks the event loop. Used at registration (MCP tool) and right
+    before each delivery.
+    """
+    host, port = _parse_webhook_url(url)
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, port or None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise UnsafeWebhookURL(f"cannot resolve webhook host {host!r}: {exc}") from exc
+    _check_resolved_ips(host, {info[4][0] for info in infos})
 
 
 def sign(secret: str, body: bytes) -> str:
@@ -127,7 +164,9 @@ async def _deliver_one(
     delivery_id = uuid.uuid4().hex
     try:
         # Re-check the URL right before sending (DNS-rebinding defense).
-        assert_safe_webhook_url(webhook.url)
+        # Async variant: DNS goes through the loop's resolver so a slow
+        # lookup can't stall the whole event loop mid-sync.
+        await assert_safe_webhook_url_async(webhook.url)
         resp = await client.post(
             webhook.url,
             content=body,

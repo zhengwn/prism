@@ -39,7 +39,8 @@ DAILY_SYNC_HOUR: int = int(os.environ.get("PRISM_DAILY_SYNC_HOUR", "9"))
 
 DAILY_SYNC_TZ: str = os.environ.get("PRISM_DAILY_SYNC_TZ", "Asia/Shanghai")
 
-# Set to "0" / "false" to disable the daily cron entirely (tests, dev).
+# Set PRISM_DAILY_SYNC_DISABLED=1 (or "true" / "yes") to disable the daily
+# cron entirely (tests, dev). Unset / "0" / "false" / "no" keep it enabled.
 DAILY_SYNC_ENABLED: bool = os.environ.get("PRISM_DAILY_SYNC_DISABLED", "0").lower() in {
     "0",
     "false",

@@ -135,6 +135,10 @@ export function InboxPage() {
   const [syncState, setSyncState] = useState<SyncUiState>("idle");
   const [toast, setToast] = useState<{ kind: "success" | "error" | "info"; text: string } | null>(null);
   const resetTimer = useRef<number | null>(null);
+  // Unmount guard for the sync poll loop in handleSync — without it the
+  // 250ms polling kept firing until the job ended, long after the page
+  // was gone. The job itself keeps running server-side either way.
+  const aliveRef = useRef(true);
   // The job_id of the in-flight sync, captured when the POST
   // /api/sync call returns. Needed by handleCancel to call
   // POST /api/sync/{jobId}/cancel. Null when no sync is running.
@@ -149,6 +153,7 @@ export function InboxPage() {
 
   useEffect(() => {
     return () => {
+      aliveRef.current = false;
       if (resetTimer.current !== null) {
         window.clearTimeout(resetTimer.current);
       }
@@ -179,10 +184,13 @@ export function InboxPage() {
       const POLL_TIMEOUT_MS = 5 * 60 * 1000; // 5 min — anything longer = bug
       const deadline = Date.now() + POLL_TIMEOUT_MS;
       let final = initial;
-      while (final.status === "running" && Date.now() < deadline) {
+      while (final.status === "running" && Date.now() < deadline && aliveRef.current) {
         await new Promise<void>((r) => window.setTimeout(r, POLL_MS));
         final = await api.getSyncStatus(jobId);
       }
+      // Unmounted mid-poll: skip every state update below (they'd be
+      // no-ops anyway) and don't schedule the reset timer.
+      if (!aliveRef.current) return;
 
       // Now flip the button state to match the final status.
       // 'done' and 'cancelled' both count as "not an error" —
@@ -225,12 +233,16 @@ export function InboxPage() {
     } finally {
       // After a brief feedback window, drop back to idle. This lets the
       // success/error state be visible without persisting forever.
-      if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
-      resetTimer.current = window.setTimeout(() => {
-        setSyncState("idle");
-        setToast(null);
-        setActiveJobId(null);
-      }, 2_500);
+      // Skipped when unmounted — nothing left to reset, and the timer
+      // would leak past the component's lifetime.
+      if (aliveRef.current) {
+        if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+        resetTimer.current = window.setTimeout(() => {
+          setSyncState("idle");
+          setToast(null);
+          setActiveJobId(null);
+        }, 2_500);
+      }
     }
   };
 

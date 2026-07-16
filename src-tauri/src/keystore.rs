@@ -63,20 +63,36 @@
 //! against a `tempfile::TempDir`. The Tauri-handle wrappers
 //! ([`read_active_provider`], …) resolve `~/.prism/` and call the core.
 //!
-//! # SECURITY
+//! # SECURITY — be honest about what this is
 //!
-//! - The master key is generated from `OsRng` once on first write.
-//! - The keystore JSON is the only place a non-keychain `api_key` lives
-//!   on disk. The 0600 permission restricts access to the file owner.
-//!   An attacker with read access to the home directory can still read
-//!   both files; this is the trust model of a single-user desktop app
-//!   and matches what the macOS Keychain offered in practice.
-//! - The API key value is **never** returned to the frontend. Only
-//!   `configured: bool` crosses the JS↔Rust bridge on the read
-//!   direction (enforced in `secrets.rs`).
+//! - The master key is generated from `OsRng` once on first write —
+//!   and stored **in the same directory, unencrypted, with the same
+//!   0600 permission** as the ciphertext it protects. Anyone who can
+//!   read `keystore.json` can read `keystore.key`, so against a local
+//!   attacker (or malware running as the user) this scheme is
+//!   **equivalent to plaintext storage plus obfuscation**. That is NOT
+//!   what the macOS Keychain offers: Keychain items are gated per
+//!   requesting app by ACL and the OS prompts on foreign access.
+//! - What the encryption DOES buy: the key doesn't sit in cleartext
+//!   inside a file whose format invites casual copying — grep, backup
+//!   diffing, an unredacted support bundle, or a sync tool shipping
+//!   `~/.prism` somewhere won't expose the secret unless
+//!   `keystore.key` travels along with it.
+//! - The trade-off was deliberate (unsigned dev builds re-prompt for
+//!   Keychain access on every launch, which is what drove the move).
+//!   NOTE for the packaged app: a properly signed build keeps its
+//!   Keychain identity across launches and does NOT re-prompt — worth
+//!   revisiting Keychain-backed storage once release builds are
+//!   consistently signed.
+//! - The 0600/0700 permissions restrict access to the file owner; the
+//!   overall trust model remains "single-user desktop app".
+//! - The API key value is **never** returned to the frontend on the
+//!   routine read path — only `configured: bool` (+ last4/length)
+//!   crosses the JS↔Rust bridge; `reveal_llm_key` is the sole opt-in
+//!   exception (see `secrets.rs`).
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -694,17 +710,3 @@ fn keychain_delete(service: &str, username: &str) -> Result<(), String> {
     }
 }
 
-// Suppress "unused" warnings for items that are part of the public API
-// surface for `secrets.rs` (re-export) and `tests/keystore_smoke.rs`
-// (direct use).
-#[allow(dead_code)]
-fn _suppress_unused_for_seek() {
-    // `File::seek` is used implicitly by serde_json's file reading; we
-    // import Seek here so a future contributor doesn't have to chase
-    // the trait scope if they refactor.
-    let _f: std::io::Result<()> = (|| {
-        let mut f = File::create("/dev/null")?;
-        f.seek(std::io::SeekFrom::Start(0))?;
-        Ok(())
-    })();
-}

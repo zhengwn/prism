@@ -30,6 +30,7 @@ from prism_sidecar.fetchers.base import RawItem
 from prism_sidecar.progress import progress_store
 from prism_sidecar.store import (
     get_item,
+    get_item_content,
     get_source,
     update_item_distilled,
 )
@@ -79,7 +80,7 @@ def _get_distiller() -> Distiller | None:
             model=cfg.get("model"),
             base_url=cfg.get("base_url"),
         )
-    except (ValueError, Exception) as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         log.warning("[redistill] could not build distiller for %r: %s", provider, exc)
         return None
 
@@ -118,17 +119,19 @@ async def redistill_all_pending(
             # call and now. Skip.
             continue
 
-        # Rebuild a minimal RawItem from the stored item so we can re-prompt.
-        # We only have title_en + url from the row (we don't keep raw content
-        # in items). That's actually OK for DeepSeek — title + URL is enough
-        # context to produce a decent summary.
+        # Rebuild the RawItem for re-prompting. Schema v6 persists the
+        # raw fetched content (article body / subtitle markdown), so a
+        # redistill sees the same text the original distillation did.
+        # Pre-v6 rows have no stored content and fall back to the old
+        # (lossy) summary/title reconstruction.
+        raw_content = await get_item_content(item.id)
         raw = RawItem(
             url=item.url,
             title=item.title_en,
-            content=item.summary_en or item.title_en,  # best-effort
+            content=raw_content or item.summary_en or item.title_en,
             published_at=item.published_at,
             author=item.author,
-            metadata={},
+            metadata=item.metadata_json or {},
             content_type=item.content_type,
         )
 
