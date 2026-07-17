@@ -22,17 +22,29 @@ on purpose:
   time). `app.py` re-exports `run_all_sync_background` too, so that
   import keeps working unchanged.
 
-Concurrency model (unchanged from the pre-split code)
--------------------------------------------------------
-`sync_lock` + `inflight_jobs` together guarantee at most one sync job
-(manual or scheduled) runs at a time, across the whole sidecar
-process — see `start_sync` / `run_all_sync_background`. That's a
-deliberate simplification for the current scale (a handful of
-sources); it does mean two *different* sources can't sync
-concurrently. Worth revisiting once v0.2c's extra fetchers (YouTube /
-X / Podcast / arXiv) make "one slow source blocks everything else"
-noticeable — not changed here since it's a scheduling/product
-decision, not a bug.
+Concurrency model (v0.5.x — fetch overlaps, writes stay serial)
+----------------------------------------------------------------
+`sync_lock` + `inflight_jobs` still guarantee at most one sync JOB
+(manual or scheduled) at a time — two jobs would fight over the
+progress_store framing and the distiller quota. WITHIN a job, the
+per-source work is now pipelined:
+
+* the network-bound FETCH stage runs for up to
+  `config.SYNC_FETCH_CONCURRENCY` sources at once, so one slow
+  YouTube/X/RSS source no longer blocks every other source's fetch
+  (per-host politeness is the fetchers' HostThrottle, unchanged);
+* the DB-WRITE + DISTILL stage is consumed strictly serially, in the
+  original source order. Serial writes are a hard requirement, not a
+  style choice: every store call shares ONE aiosqlite connection, and
+  two tasks interleaving multi-statement write transactions would
+  cross-commit each other's half-written rows — see the two-stage
+  comment in `pipeline/sync.py`.
+
+Results are consumed in source order (not completion order) to keep
+job progress, sync_log rows, and tests deterministic; the trade-off is
+head-of-line waiting on the progress READOUT only — the other fetches
+keep running in the background regardless. Set
+`PRISM_SYNC_FETCH_CONCURRENCY=1` to restore fully-serial behaviour.
 """
 
 from __future__ import annotations
@@ -44,10 +56,12 @@ from typing import Optional
 
 from fastapi import HTTPException
 
-from prism_sidecar import store
-from prism_sidecar.models import SyncJobStatus, SyncResult
+from prism_sidecar import config, store
+from prism_sidecar.models import Source, SyncJobStatus, SyncResult
 from prism_sidecar.pipeline.sync import (
-    run_source_sync,
+    FetchOutcome,
+    fetch_source_data,
+    process_fetched_source,
     source_in_cooldown,
     source_retry_due,
 )
@@ -141,21 +155,52 @@ async def _run_pipeline_for_sources(
         started_at_iso=started_at.isoformat(),
     )
     cancelled = False
+
+    # Populated inside the try so the finally can always reference it,
+    # even if an early stage raises before any task is created.
+    fetch_tasks: dict[str, asyncio.Task] = {}
+    fetch_sem = asyncio.Semaphore(max(1, int(config.SYNC_FETCH_CONCURRENCY)))
+
+    async def _gated_fetch(src: Source) -> Optional[FetchOutcome]:
+        async with fetch_sem:
+            if is_job_cancelled(job_id):
+                return None  # cancel won the race; never started
+            return await fetch_source_data(src)
+
     try:
+        # Stage 0: resolve the source rows up front (cheap serial reads)
+        # so the fetch stage below launches for exactly the enabled
+        # ones, in a known order.
+        sources: list[tuple[str, Optional[Source]]] = []
         for sid in source_ids:
-            # v0.2b+: poll the cancel flag between sources. We
-            # deliberately don't try to interrupt an in-flight
-            # `run_source_sync` call — its per-item loop is doing
-            # real work (HTTP fetch + LLM call) and yanking the
-            # rug would leave half-written rows. Letting the
-            # current source finish, then bailing before the
-            # next one, is the right granularity: the user
-            # wanted to STOP, not abort a single HTTP request.
+            sources.append((sid, await store.get_source(sid)))
+
+        # Stage 1: launch the network fetches, at most
+        # SYNC_FETCH_CONCURRENCY in flight at once (see the module
+        # docstring for the model). The gate re-checks the cancel flag
+        # so a cancel arriving mid-run stops queued fetches from ever
+        # starting; fetches already in flight are cancelled in the
+        # `finally` below — safe, because stage 1 performs no DB writes
+        # (the old code let the in-flight source finish exactly because
+        # fetch and write were one blob; they no longer are).
+        for sid, src in sources:
+            if src is not None and src.enabled:
+                fetch_tasks[sid] = asyncio.create_task(_gated_fetch(src))
+
+        # Stage 2: consume the fetch results IN THE ORIGINAL SOURCE
+        # ORDER and run the DB-write + distill stage strictly serially.
+        # In-order consumption (vs. as_completed) keeps job progress,
+        # sync_log rows and tests deterministic; the other fetches keep
+        # running in the background while the head is processed.
+        for sid, source in sources:
+            # v0.2b+: poll the cancel flag between sources — the write
+            # stage is never interrupted mid-source, so a cancel still
+            # lands on a clean per-source boundary with no half-written
+            # rows.
             if is_job_cancelled(job_id):
                 log.info("[sync] job=%s cancelled by user; stopping", job_id)
                 cancelled = True
                 break
-            source = await store.get_source(sid)
             if source is None:
                 log.warning("[sync] job=%s source %s not found, skipping", job_id, sid)
                 continue
@@ -181,7 +226,14 @@ async def _run_pipeline_for_sources(
 
             try:
                 log_src_started = datetime.now(timezone.utc).isoformat()
-                stats = await run_source_sync(source)
+                outcome = await fetch_tasks[sid]
+                if outcome is None:
+                    # The gated fetch observed the cancel flag before
+                    # starting — same outcome as the loop-top check.
+                    log.info("[sync] job=%s cancelled by user; stopping", job_id)
+                    cancelled = True
+                    break
+                stats = await process_fetched_source(source, outcome)
                 sources_done += 1
                 items_new += stats.new_items
                 items_distilled += stats.distilled
@@ -268,6 +320,14 @@ async def _run_pipeline_for_sources(
             error=first_error,
         )
     finally:
+        # Never leak fetch tasks: on cancel, error, or normal return,
+        # kill whatever is still in flight and wait for it to settle.
+        # Safe to cancel mid-HTTP — the fetch stage writes nothing.
+        pending = [t for t in fetch_tasks.values() if not t.done()]
+        for t in pending:
+            t.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         # Always close the live progress channel — happy path,
         # key-invalid early bail, and exception. The UI relies on
         # `is_running=false` to stop animating.

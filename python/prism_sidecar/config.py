@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-
 # ----- LLM ----------------------------------------------------------------
 
 DEEPSEEK_API_KEY: str | None = os.environ.get("DEEPSEEK_API_KEY") or None
@@ -56,6 +55,12 @@ FETCH_TIMEOUT_SEC: float = float(os.environ.get("PRISM_FETCH_TIMEOUT_SEC", "15")
 FETCH_MAX_RETRIES: int = int(os.environ.get("PRISM_FETCH_MAX_RETRIES", "2"))
 
 FETCH_RETRY_BACKOFF_SEC: float = float(os.environ.get("PRISM_FETCH_RETRY_BACKOFF_SEC", "1.0"))
+
+# How many sources may be in their (network-only) fetch stage at once
+# during a sync job. The DB-write + distill stage stays strictly serial
+# regardless — see pipeline/orchestrator.py. 1 restores the fully-serial
+# pre-v0.5.x behaviour.
+SYNC_FETCH_CONCURRENCY: int = int(os.environ.get("PRISM_SYNC_FETCH_CONCURRENCY", "4"))
 
 # NOTE: FETCH_INTER_SOURCE_SLEEP_SEC was removed in v0.2c — it was
 # defined here but never referenced anywhere (dead config, same class

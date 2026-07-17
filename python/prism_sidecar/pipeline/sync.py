@@ -2,10 +2,14 @@
 
 `run_source_sync(source)` is the unit of work: it fetches the source,
 deduplicates by `items.url`, inserts new raw rows, and (if a distiller is
-configured) calls the LLM to fill in the bilingual fields.
+configured) calls the LLM to fill in the bilingual fields. Since v0.5.x
+it is split into two stages — `fetch_source_data` (network only, safe to
+run concurrently across sources) and `process_fetched_source` (all DB
+writes, strictly serial) — so a slow source's fetch no longer blocks the
+others. See the "Two-stage source sync" comment below.
 
-The orchestrator (`run_all_sync` / `run_one_sync` in `app.py`) handles
-job tracking and the per-source serialisation.
+The orchestrator (`pipeline/orchestrator.py`) handles job tracking, the
+bounded fetch concurrency, and the serial process phase.
 
 First-sync behaviour: a source's *first* successful sync uses a wider
 lookback window (INITIAL_FETCH_LOOKBACK_DAYS, default 30 days) so a fresh
@@ -16,13 +20,13 @@ install isn't sparse. After that, every sync uses FETCH_LOOKBACK_DAYS
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from prism_sidecar.config import (
     FETCH_LOOKBACK_DAYS,
     INITIAL_FETCH_LOOKBACK_DAYS,
-    is_distiller_configured,
 )
 from prism_sidecar.distillers.base import (
     DistilledItem,
@@ -201,43 +205,101 @@ async def source_retry_due(source_id: str) -> bool:
     return not await source_in_cooldown(source_id)
 
 
-async def run_source_sync(source: Source, distiller: Distiller | None = None) -> SyncStats:
-    """Fetch + dedupe + insert + distill for a single source.
+# ---- Two-stage source sync (v0.5.x) ---------------------------------------
+#
+# `run_source_sync` used to be one blob: fetch + insert + distill. It is
+# now split so the orchestrator can overlap the network-bound fetch stage
+# across sources (bounded by config.SYNC_FETCH_CONCURRENCY) while keeping
+# the DB-write + distill stage strictly serial:
+#
+#   * fetch_source_data()      — stage 1, network only, NO DB WRITES.
+#                                Safe to run concurrently across sources
+#                                (per-host politeness is already enforced
+#                                by the v0.2c HostThrottle inside the
+#                                fetchers). Its only DB access is the
+#                                read-only first-sync lookback flag.
+#   * process_fetched_source() — stage 2, everything that writes: dedupe,
+#                                insert, distill, FTS/embedding upkeep,
+#                                cooldown bookkeeping. MUST stay serial:
+#                                every store call shares ONE aiosqlite
+#                                connection, and two tasks interleaving
+#                                multi-statement write sequences would
+#                                cross-commit each other's half-written
+#                                rows (insert_item_from_raw alone is
+#                                INSERT + UPDATE + FTS delete/insert +
+#                                commit).
+#
+# `run_source_sync` composes the two stages and keeps its original
+# contract, so single-source callers and the existing tests are
+# unaffected.
 
-    Errors at the fetch level are captured into the stats object and
-    `sources.last_error` so the rest of the pipeline (and the UI) can
-    surface them. We never raise — the caller (job orchestrator) needs to
-    be able to continue with the next source.
+
+@dataclass(slots=True)
+class FetchOutcome:
+    """What the fetch stage produced for one source.
+
+    Exactly one of three shapes:
+      * success           — `raw_items` set, both errors None
+      * whole-source fail — `fetch_error` set (v0.2c contract), with any
+                            salvaged `partial_items` in `raw_items`
+      * fetcher bug       — `unexpected_error` set (non-FetchError raise);
+                            the process stage records it and bumps the
+                            failure streak, same as the old inline code
     """
-    stats = SyncStats()
-    distiller = distiller if distiller is not None else _get_distiller()
 
-    if not source.enabled:
-        stats.error = "source disabled"
-        return stats
-
-    lookback = await _lookback_for_source(source)
-    stats.lookback_days = lookback
-
-    fetcher = registry.get_fetcher(source)
+    lookback_days: int
+    raw_items: list[RawItem] = field(default_factory=list)
     fetch_error: FetchError | None = None
+    unexpected_error: Exception | None = None
+
+
+async def fetch_source_data(source: Source) -> FetchOutcome:
+    """Stage 1: the network fetch for one source. Never raises, never
+    writes to the DB — errors travel inside the returned FetchOutcome so
+    the (serial) process stage can do the bookkeeping."""
+    lookback = await _lookback_for_source(source)
+    fetcher = registry.get_fetcher(source)
     try:
         raw_items: list[RawItem] = await fetcher.fetch(source, lookback_days=lookback)
     except FetchError as exc:
         # Whole-source failure (v0.2c contract). Salvage whatever the
-        # fetcher built before dying — the insert/distill loop below
-        # still runs over the partials; the error is recorded at the end.
+        # fetcher built before dying — the insert/distill loop in the
+        # process stage still runs over the partials; the error is
+        # recorded at the end.
         log.error("[sync] %s (%s) fetch failed: %s", source.name, source.id, exc)
-        fetch_error = exc
-        raw_items = exc.partial_items
+        return FetchOutcome(lookback, list(exc.partial_items), fetch_error=exc)
     except Exception as exc:  # noqa: BLE001
         # Not a FetchError → fetcher bug (e.g. the lookback_days
         # signature regression). Same accounting, louder log.
         log.exception("[sync] %s (%s) fetch raised unexpectedly", source.name, source.id)
+        return FetchOutcome(lookback, [], unexpected_error=exc)
+    return FetchOutcome(lookback, raw_items)
+
+
+async def process_fetched_source(
+    source: Source,
+    outcome: FetchOutcome,
+    distiller: Distiller | None = None,
+) -> SyncStats:
+    """Stage 2: dedupe + insert + distill + source/cooldown bookkeeping.
+
+    All DB writes live here. The orchestrator calls this strictly
+    serially across sources — see the module comment above for why that
+    is a hard requirement, not a style choice.
+    """
+    stats = SyncStats()
+    stats.lookback_days = outcome.lookback_days
+    distiller = distiller if distiller is not None else _get_distiller()
+
+    if outcome.unexpected_error is not None:
+        exc = outcome.unexpected_error
         stats.error = f"fetch: {exc!r}"
         await mark_source_error(source.id, str(exc))
         await record_sync_failure(source.id)
         return stats
+
+    fetch_error: FetchError | None = outcome.fetch_error
+    raw_items: list[RawItem] = outcome.raw_items
 
     stats.fetched = len(raw_items)
 
@@ -344,13 +406,35 @@ async def run_source_sync(source: Source, distiller: Distiller | None = None) ->
     log.info(
         "[sync] %s: fetched=%d new=%d distilled=%d failed_distill=%d lookback=%dd",
         source.name, stats.fetched, stats.new_items, stats.distilled,
-        stats.failed_distill, lookback,
+        stats.failed_distill, stats.lookback_days,
     )
     return stats
 
 
+async def run_source_sync(source: Source, distiller: Distiller | None = None) -> SyncStats:
+    """Fetch + dedupe + insert + distill for a single source.
+
+    Composes the two stages (fetch_source_data → process_fetched_source)
+    back into the original single-call contract: errors at the fetch
+    level are captured into the stats object and `sources.last_error` so
+    the caller (job orchestrator) can continue with the next source. We
+    never raise.
+    """
+    stats = SyncStats()
+    if not source.enabled:
+        stats.error = "source disabled"
+        return stats
+
+    distiller = distiller if distiller is not None else _get_distiller()
+    outcome = await fetch_source_data(source)
+    return await process_fetched_source(source, outcome, distiller)
+
+
 __all__ = [
     "run_source_sync",
+    "fetch_source_data",
+    "process_fetched_source",
+    "FetchOutcome",
     "SyncStats",
     "get_fail_streak",
     "record_sync_failure",
