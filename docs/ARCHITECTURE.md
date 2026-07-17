@@ -116,7 +116,7 @@
 
 `prism_sidecar/mcp_server.py`（`prism-mcp` 入口）是一个独立的 stdio MCP 进程，
 自己开 `~/.prism/data.db`（**Prism app 不必在跑**）。复用 `init_db()` +
-`store.py`，只读性在工具层保证；写工具直连 DB（`POST /api/sources` 本就是纯
+`store/` 包，只读性在工具层保证；写工具直连 DB（`POST /api/sources` 本就是纯
 passthrough，直写零损失）。`init_db` 设 `busy_timeout=5000` 防跨进程写并发。
 
 ```
@@ -267,7 +267,7 @@ prism/
 │   │   ├── fts5.py           # SQLite FTS5 全文搜索
 │   │   ├── progress.py       # 提炼进度内存 store（喂给 SSE 流）
 │   │   ├── settings.py       # PROVIDER_SCHEMAS + active_provider.json R/W
-│   │   ├── store.py          # SQLite-backed CRUD（+ v0.3 webhooks）
+│   │   ├── store/            # SQLite-backed CRUD（按实体拆分的包，v0.5.x）
 │   │   ├── mcp_server.py     # MCP server（stdio，v0.3；读 4 + 写 2 + webhook 3 工具；复用 init_db + store）
 │   │   ├── webhooks.py       # v0.3 webhook 投递 + HMAC + SSRF 守卫（sync 成功后 dispatch）
 │   │   ├── scheduler.py      # APScheduler 集成

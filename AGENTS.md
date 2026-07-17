@@ -63,7 +63,7 @@ prism/
 │   │   ├── fts5.py       # SQLite FTS5 full-text search (v0.2b)
 │   │   ├── progress.py   # in-memory distill-progress store, feeds the SSE stream (v0.2b)
 │   │   ├── settings.py   # PROVIDER_SCHEMAS + active_provider.json R/W
-│   │   ├── store.py      # SQLite-backed CRUD (+ v0.3 webhooks table)
+│   │   ├── store/        # SQLite-backed CRUD，按实体拆分的包（sources/items/tags/vectors/webhooks/jobs/meta/health）
 │   │   ├── mcp_server.py # MCP server (stdio, v0.3; `prism-mcp` entry): read 4 + write 2 (subscribe/set_enabled) + webhook 3 tools; reuses init_db + store
 │   │   ├── webhooks.py   # v0.3 webhook delivery: HMAC signing + SSRF guard, fired from pipeline/sync.py after a successful sync
 │   │   ├── scheduler.py  # APScheduler integration
