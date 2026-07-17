@@ -105,7 +105,7 @@ async def reindex_missing(batch_limit: int | None = None) -> dict:
             "error": str(e),
         }
 
-    for item_id, vec in zip(ids, vectors):
+    for item_id, vec in zip(ids, vectors, strict=True):
         try:
             await _store.upsert_item_vector(item_id, vec)
             indexed += 1

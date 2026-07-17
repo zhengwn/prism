@@ -54,7 +54,6 @@ export async function notify(title: string, body: string): Promise<void> {
     return;
   }
   if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-    // eslint-disable-next-line no-new
     new Notification(title, { body });
   }
 }

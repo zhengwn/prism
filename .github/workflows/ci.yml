@@ -1,0 +1,115 @@
+# Prism CI — the four test surfaces the README's "本机实跑" numbers come
+# from, now enforced on every push/PR instead of relying on local
+# discipline: pytest (sidecar), vitest + tsc + eslint (frontend),
+# cargo test (Tauri shell), Playwright (hermetic frontend E2E).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: sidecar (ruff + pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
+      # `uv sync` re-locks automatically if pyproject.toml changed, so a
+      # stale uv.lock degrades to a slower run, not a red build.
+      - run: uv sync
+      - run: uv run ruff check .
+      - run: uv run pytest -q
+
+  frontend:
+    name: frontend (eslint + tsc + vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      # `build` = tsc -b && vite build — the typecheck gate.
+      - run: npm run build
+      - run: npm test
+
+  rust:
+    name: tauri shell (cargo test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # Tauri 2 Linux build deps (webkit2gtk 4.1 for ubuntu-24.04 runners).
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # Both of these are build-time inputs that exist locally but are
+      # gitignored:
+      #   * `dist/` — tauri::generate_context! embeds frontendDist and
+      #     fails to compile if the directory is missing. The tests don't
+      #     serve the UI, so a stub index.html is enough.
+      #   * `binaries/prism-sidecar-<triple>` — tauri_build resolves the
+      #     externalBin entry per target triple. The tests never spawn it
+      #     (spawn failure is non-fatal by design), so an empty
+      #     executable satisfies the check.
+      - name: Stub gitignored build inputs
+        run: |
+          mkdir -p dist
+          echo '<!doctype html><title>stub</title>' > dist/index.html
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          mkdir -p src-tauri/binaries
+          touch "src-tauri/binaries/prism-sidecar-${triple}"
+          chmod +x "src-tauri/binaries/prism-sidecar-${triple}"
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets
+
+  e2e:
+    name: e2e (playwright, mocked sidecar)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      # Hermetic: mock-sidecar.ts intercepts the sidecar HTTP contract in
+      # the page, so no Python process or API key is involved.
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

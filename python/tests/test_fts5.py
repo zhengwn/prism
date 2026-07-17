@@ -27,7 +27,6 @@ from prism_sidecar.fts5 import (
     sanitize_fts5_query,
 )
 
-
 # ---- pure-function sanitizer --------------------------------------------
 
 
@@ -43,12 +42,12 @@ def test_sanitize_fts5_query_strips_metachars():
     # and gets prefix-wrapped.
     safe = sanitize_fts5_query('"andreas" +kling -foo:bar')
     assert safe is not None
-    # Should not contain raw metachars in the resulting MATCH expr
-    # (we wrap each token in quotes for safety).
-    for ch in '"\'()*:^':
-        # Quotes ARE allowed because we put them there ourselves
-        # as token delimiters — but the raw input's quotes are gone.
-        pass
+    # Should not contain raw metachars in the resulting MATCH expr.
+    # `"` and `*` are excluded from the check: _expand_token emits those
+    # itself as token delimiters / prefix markers — the raw input's are
+    # gone either way.
+    for ch in "'():^":
+        assert ch not in safe
     # The literal words survive (we lost "foo" because "foo:bar" was
     # treated as `foo bar` after stripping ":")
     assert "andreas" in safe
@@ -254,7 +253,7 @@ async def test_fts5_index_tracks_update(initialized):
     must reflect the new content (not the old)."""
     from prism_sidecar.distillers.base import DistilledItem
 
-    source = await _seed()
+    await _seed()
     items = await store.list_items(q="GPT-5", limit=10)
     item_id = items[0].id
     # Original summary_en is "Native multimodal with tool use" —

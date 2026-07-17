@@ -5,12 +5,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 from asgi_lifespan import LifespanManager
+from httpx import ASGITransport, AsyncClient
 
+from prism_sidecar import store
 from prism_sidecar.app import app
 from prism_sidecar.db import init_db
-from prism_sidecar import store
 from prism_sidecar.fetchers.base import RawItem
 from prism_sidecar.models import ContentType
 

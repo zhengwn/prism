@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,9 +19,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from prism_sidecar.fetchers.base import RawItem  # noqa: E402
 from prism_sidecar.distillers.bilibili_prompt import (  # noqa: E402
-    BILIBILI_DISTILL_PROMPT,
     DEFAULT_MAX_CHARS,
     HEAD_CHARS,
     MIDDLE_CHARS,
@@ -31,7 +28,7 @@ from prism_sidecar.distillers.bilibili_prompt import (  # noqa: E402
     parse_subtitle,
     truncate_subtitle,
 )
-
+from prism_sidecar.fetchers.base import RawItem  # noqa: E402
 
 # A 5-chapter "talk on transformer scaling laws" — fabricated but
 # representative of the kind of structure real B站 content creators use.
@@ -94,7 +91,7 @@ def build_realistic_subtitle() -> str:
     for repeat in range(60):
         if repeat > 0:
             lines.append(f"[CC] === 第 {repeat + 1} 段讨论开始 ===")
-        for chapter_title, segs in CHAPTERS:
+        for _chapter_title, segs in CHAPTERS:
             for i, seg in enumerate(segs):
                 if i % 4 == 3:
                     lines.append(f"[AI] {seg}")

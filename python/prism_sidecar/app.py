@@ -20,7 +20,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,7 +28,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from prism_sidecar import __version__, _http, scheduler, search, settings, store
-from prism_sidecar.progress import progress_store
 from prism_sidecar.config import (
     DAILY_SYNC_ENABLED,
     DAILY_SYNC_HOUR,
@@ -41,20 +40,19 @@ from prism_sidecar.db import close_db, init_db
 from prism_sidecar.distillers.registry import get_distiller as _registry_get_distiller
 from prism_sidecar.models import (
     HealthInfo,
-    ItemStatus,
     ItemStatusPatch,
     ItemTagCreate,
     KnowledgeItem,
     Source,
     SourceCreate,
     SourcePatch,
-    SyncJobStatus,
     SyncLogEntry,
     SyncResult,
     TagCount,
 )
 from prism_sidecar.pipeline import orchestrator
 from prism_sidecar.pipeline.distill import list_pending_distill_ids, redistill_all_pending
+from prism_sidecar.progress import progress_store
 
 # ---- Logging -------------------------------------------------------------
 
@@ -340,7 +338,7 @@ async def add_item_tag(item_id: str, payload: ItemTagCreate) -> KnowledgeItem:
     try:
         updated = await store.add_item_tag(item_id, payload.tag)
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     if not updated:
         raise HTTPException(404, f"item {item_id} not found")
     return updated

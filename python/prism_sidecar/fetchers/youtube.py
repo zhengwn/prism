@@ -40,7 +40,7 @@ from prism_sidecar.config import FETCH_LOOKBACK_DAYS, FETCH_TIMEOUT_SEC
 from prism_sidecar.fetchers import _retry
 from prism_sidecar.fetchers._retry import retry_async
 from prism_sidecar.fetchers._subtitle import subtitle_body_to_markdown
-from prism_sidecar.fetchers.base import FetchError, Fetcher, RawItem
+from prism_sidecar.fetchers.base import FetchError, RawItem
 from prism_sidecar.models import ContentType, Source, SourceKind
 
 log = logging.getLogger(__name__)
@@ -147,7 +147,7 @@ def pick_caption_track(
             if url:
                 return url, lang, "cc"
     # Tier 2: manual any (en first for determinism)
-    for lang in sorted(subs.keys(), key=lambda l: (not l.startswith("en"), l)):
+    for lang in sorted(subs.keys(), key=lambda code: (not code.startswith("en"), code)):
         url = _pick_json3_url(subs[lang])
         if url:
             return url, lang, "cc"
@@ -158,7 +158,7 @@ def pick_caption_track(
             if url:
                 return url, lang, "ai"
     # Tier 4: automatic en
-    for lang in sorted(autos.keys(), key=lambda l: (not l.startswith("en"), l)):
+    for lang in sorted(autos.keys(), key=lambda code: (not code.startswith("en"), code)):
         if lang.startswith("en"):
             url = _pick_json3_url(autos[lang])
             if url:

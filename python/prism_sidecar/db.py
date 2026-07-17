@@ -211,6 +211,7 @@ async def _init_vec(db: aiosqlite.Connection) -> None:
     global _vec_available
     try:
         import sqlite_vec  # noqa: PLC0415 — optional, only needed here
+
         from prism_sidecar.embeddings import EMBED_DIM
 
         await db.enable_load_extension(True)

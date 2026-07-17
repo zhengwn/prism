@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import shutil
-import tempfile
 from pathlib import Path
 from typing import AsyncIterator
 
-import aiosqlite
 import pytest
 import pytest_asyncio
-
 
 # ----- Env defaults — must be set BEFORE app import ---------------------
 

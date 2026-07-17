@@ -10,13 +10,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 from asgi_lifespan import LifespanManager
+from httpx import ASGITransport, AsyncClient
 
+from prism_sidecar import embeddings as emb
+from prism_sidecar import search, store
 from prism_sidecar.app import app
 from prism_sidecar.db import init_db, vec_available
-from prism_sidecar import store, search
-from prism_sidecar import embeddings as emb
 from prism_sidecar.distillers.base import DistilledItem
 from prism_sidecar.fetchers.base import RawItem
 from prism_sidecar.models import ContentType

@@ -9,7 +9,6 @@ import respx
 from httpx import Response
 
 from prism_sidecar.fetchers.arxiv import (
-    DEFAULT_CATEGORIES,
     ArxivFetcher,
     build_query_url,
     parse_categories,

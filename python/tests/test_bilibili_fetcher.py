@@ -18,8 +18,6 @@ These cover the PoC acceptance criteria from the task brief:
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -31,7 +29,6 @@ from prism_sidecar.fetchers import bilibili as bili_mod
 from prism_sidecar.fetchers.base import FetchError
 from prism_sidecar.fetchers.bilibili import BilibiliFetcher
 from prism_sidecar.models import Source, SourceKind
-
 
 # ----- helpers ----------------------------------------------------------
 

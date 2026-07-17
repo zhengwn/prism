@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from prism_sidecar.db import init_db
 from prism_sidecar import store
+from prism_sidecar.db import init_db
 from prism_sidecar.distillers.base import DistilledItem
 from prism_sidecar.fetchers.base import RawItem
-from prism_sidecar.models import ContentType, SourceKind
+from prism_sidecar.models import ContentType
 
 
 @pytest.fixture

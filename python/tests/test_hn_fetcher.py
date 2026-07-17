@@ -9,7 +9,6 @@ from httpx import Response
 from prism_sidecar.fetchers.hackernews import HackerNewsFetcher, is_hn_source
 from prism_sidecar.models import Source, SourceKind
 
-
 SAMPLE_HITS = {
     "hits": [
         {

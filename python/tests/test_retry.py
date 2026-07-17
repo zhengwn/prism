@@ -5,8 +5,6 @@ All tests inject fake `sleep` / `clock` — nothing here actually sleeps.
 
 from __future__ import annotations
 
-import asyncio
-
 import httpx
 import pytest
 

@@ -41,7 +41,6 @@ import re
 import sqlite3
 from typing import Iterable
 
-
 # Characters that FTS5's MATCH parser treats as syntax. Stripping
 # them all is the simplest correct thing — we don't need boolean
 # operators from the search box, just literal text + prefix.

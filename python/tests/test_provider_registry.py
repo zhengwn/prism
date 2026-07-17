@@ -17,7 +17,6 @@ from prism_sidecar.distillers.registry import PROVIDERS, get_distiller
 from prism_sidecar.fetchers.base import RawItem
 from prism_sidecar.models import ContentType
 
-
 SAMPLE_RAW = RawItem(
     url="https://example.com/p",
     title="T",

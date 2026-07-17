@@ -19,7 +19,7 @@ import httpx
 from prism_sidecar.config import FETCH_MAX_RETRIES, FETCH_RETRY_BACKOFF_SEC, FETCH_TIMEOUT_SEC
 from prism_sidecar.fetchers import _retry
 from prism_sidecar.fetchers._retry import retry_async
-from prism_sidecar.fetchers.base import FetchError, Fetcher, RawItem
+from prism_sidecar.fetchers.base import FetchError, RawItem
 from prism_sidecar.models import ContentType, Source, SourceKind
 
 log = logging.getLogger(__name__)

@@ -23,16 +23,15 @@ Anti-rate-limit: 每个视频之间 sleep 0.5s,UP 主列表里 page size 上限 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any
 
 from prism_sidecar import _http
 from prism_sidecar.config import FETCH_TIMEOUT_SEC
 from prism_sidecar.fetchers import _retry
 from prism_sidecar.fetchers._subtitle import format_timestamp, subtitle_body_to_markdown
-from prism_sidecar.fetchers.base import FetchError, Fetcher, RawItem
+from prism_sidecar.fetchers.base import FetchError, RawItem
 from prism_sidecar.models import ContentType, Source, SourceKind
 
 log = logging.getLogger(__name__)

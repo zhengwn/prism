@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
 import pytest
 
@@ -14,7 +13,7 @@ from prism_sidecar.distillers.base import (
     DistillerKeyInvalid,
 )
 from prism_sidecar.fetchers.base import RawItem
-from prism_sidecar.models import ContentType, Source, SourceKind
+from prism_sidecar.models import ContentType
 from prism_sidecar.pipeline.distill import (
     RedistillResult,
     list_pending_distill_ids,

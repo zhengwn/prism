@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from prism_sidecar.config import is_distiller_configured
+from prism_sidecar.db import get_db
 from prism_sidecar.distillers.base import (
     DistilledItem,
     Distiller,
@@ -28,16 +28,15 @@ from prism_sidecar.distillers.base import (
 from prism_sidecar.distillers.registry import get_distiller
 from prism_sidecar.fetchers.base import RawItem
 from prism_sidecar.progress import progress_store
+from prism_sidecar.settings import (
+    is_provider_configured,
+    load_active_provider,
+)
 from prism_sidecar.store import (
     get_item,
     get_item_content,
     get_source,
     update_item_distilled,
-)
-from prism_sidecar.db import get_db
-from prism_sidecar.settings import (
-    is_provider_configured,
-    load_active_provider,
 )
 
 log = logging.getLogger(__name__)

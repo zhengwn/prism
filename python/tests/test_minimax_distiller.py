@@ -22,7 +22,6 @@ from prism_sidecar.distillers.minimax import MiniMaxDistiller
 from prism_sidecar.fetchers.base import RawItem
 from prism_sidecar.models import ContentType
 
-
 SAMPLE_RAW = RawItem(
     url="https://example.com/p",
     title="M3 multimodal release",

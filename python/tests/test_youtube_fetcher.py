@@ -30,7 +30,6 @@ from prism_sidecar.fetchers.youtube import (
 )
 from prism_sidecar.models import ContentType, Source, SourceKind
 
-
 # ----- helpers ----------------------------------------------------------
 
 

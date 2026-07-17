@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 from asgi_lifespan import LifespanManager
+from httpx import ASGITransport, AsyncClient
 
 from prism_sidecar.app import app
 from prism_sidecar.fetchers.base import RawItem
@@ -319,6 +318,7 @@ async def test_cancel_marks_job_as_cancelled(client, monkeypatch):
     """User cancels mid-run: the response should eventually be
     `status=cancelled` with partial progress preserved."""
     import asyncio as _asyncio
+
     from prism_sidecar import app as appmod
     from prism_sidecar.fetchers import registry
 

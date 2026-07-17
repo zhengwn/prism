@@ -25,7 +25,6 @@ from prism_sidecar.distillers.deepseek import DeepSeekDistiller
 from prism_sidecar.fetchers.base import RawItem
 from prism_sidecar.models import ContentType
 
-
 SAMPLE_RAW = RawItem(
     url="https://example.com/post",
     title="OpenAI ships GPT-5",

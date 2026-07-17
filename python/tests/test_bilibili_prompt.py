@@ -22,27 +22,22 @@ import pytest
 
 from prism_sidecar.distillers.base import (
     _build_prompt,
-    _parse_response,
 )
 from prism_sidecar.distillers.bilibili_prompt import (
-    BILIBILI_DISTILL_PROMPT,
     BILIBILI_META_ONLY_PROMPT,
     DEFAULT_MAX_CHARS,
     HEAD_CHARS,
     MIDDLE_CHARS,
     TAIL_CHARS,
-    SubtitleAnalysis,
     build_bilibili_prompt,
     is_bilibili,
     parse_subtitle,
-    should_use_bilibili_prompt,
     truncate_segment_list,
     truncate_subtitle,
 )
 from prism_sidecar.distillers.deepseek import DeepSeekDistiller
 from prism_sidecar.fetchers.base import RawItem
 from prism_sidecar.models import ContentType
-
 
 # ----- Fixtures -----------------------------------------------------------
 
@@ -591,7 +586,7 @@ def test_truncate_segment_list_samples_when_over_cap():
 def test_truncate_segment_list_respects_char_budget():
     """After sampling, the kept content must fit within the char budget
     (allowing a small overshoot for the safety net loop)."""
-    segs = [f"x" * 100 for _ in range(1000)]  # 100k chars total
+    segs = ["x" * 100 for _ in range(1000)]  # 100k chars total
     kept, _, _ = truncate_segment_list(
         segs, max_chars=5000, head_count=20, middle_count=20, tail_count=10,
     )

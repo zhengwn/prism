@@ -340,7 +340,7 @@ async def prism_subscribe(
     except ValueError:
         raise ToolError(
             f"Unknown kind {kind!r}. Must be one of: {_SUBSCRIBE_KINDS}."
-        )
+        ) from None
     cfg = config or {}
     _validate_source_config(source_kind, url, cfg)
     source = await store.create_source(

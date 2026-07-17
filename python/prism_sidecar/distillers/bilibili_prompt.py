@@ -236,7 +236,7 @@ def truncate_subtitle(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> str:
         parts.append(f"\n\n[... 中段采样 {len(text) - head_budget - tail_budget if tail_budget else len(text) - head_budget} 字符 ...]\n\n")
         parts.append(middle)
     if tail:
-        parts.append(f"\n\n[... 末尾省略 ...]\n\n")
+        parts.append("\n\n[... 末尾省略 ...]\n\n")
         parts.append(tail)
     return "".join(parts)
 
@@ -393,7 +393,7 @@ def _format_subtitle_for_prompt(analysis: SubtitleAnalysis, truncated: str) -> s
         joined = "\n".join(f"- {line}" for line in kept)
         header = f"## 人工/官方字幕（CC，{kept_n}/{len(analysis.cc_segments)} 段，优先信任）"
         if omitted_n > 0:
-            header += f" — 已采样（head + middle + tail）"
+            header += " — 已采样（head + middle + tail）"
         sections.append(f"{header}\n{joined}")
     if analysis.ai_segments:
         kept, kept_n, omitted_n = truncate_segment_list(
@@ -403,7 +403,7 @@ def _format_subtitle_for_prompt(analysis: SubtitleAnalysis, truncated: str) -> s
         joined = "\n".join(f"- {line}" for line in kept)
         header = f"## AI 机翻字幕（AI，{kept_n}/{len(analysis.ai_segments)} 段，辅助校正）"
         if omitted_n > 0:
-            header += f" — 已采样（head + middle + tail）"
+            header += " — 已采样（head + middle + tail）"
         sections.append(f"{header}\n{joined}")
     return "\n\n".join(sections)
 
