@@ -4,6 +4,9 @@
   "private": true,
   "description": "Prism — AI news & knowledge distiller",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "vite",
     "dev:all": "concurrently -n vite,sidecar -c blue,magenta --kill-others-on-fail \"npm run dev\" \"npm run sidecar:dev\"",
