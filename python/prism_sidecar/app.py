@@ -73,16 +73,13 @@ log = logging.getLogger("prism-sidecar")
 # route handlers with that orchestration, and the split mirrors the
 # existing `pipeline/distill.py` pattern for the redistill batch logic.
 #
-# `_inflight_jobs` and `run_all_sync_background` are re-exported here
-# (not copies — same underlying `set` / function object) for two
-# external contracts that named this module specifically:
-#   * `tests/test_api.py` asserts on `app._inflight_jobs` directly.
-#   * `scheduler.py` does a late `from prism_sidecar.app import
-#     run_all_sync_background` to avoid an import cycle.
-# New code should prefer calling `orchestrator.*` directly.
+# `_inflight_jobs` is re-exported here (not a copy — the same `set`
+# object) because `tests/test_api.py` asserts on `app._inflight_jobs`
+# directly. New code should prefer `orchestrator.inflight_jobs`.
+# (The run_*_background re-exports that used to sit next to it were for
+# scheduler.py's late import; since v0.5.x scheduler imports them from
+# `pipeline.orchestrator` at module top — no cycle — so they're gone.)
 _inflight_jobs = orchestrator.inflight_jobs
-run_all_sync_background = orchestrator.run_all_sync_background
-run_failed_retry_background = orchestrator.run_failed_retry_background
 
 # Cached reference to the most recently built distiller. The pipeline
 # builds a fresh distiller per job (so config changes between jobs are

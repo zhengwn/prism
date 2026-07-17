@@ -10,17 +10,20 @@ distill-batch logic to `pipeline/distill.py`.
 
 Backward compatibility
 -----------------------
-Two external contracts depended on the old location and are preserved
+One external contract depended on the old location and is preserved
 on purpose:
 
 * `tests/test_api.py` reaches into `prism_sidecar.app._inflight_jobs`
   directly to assert on in-flight state. `app.py` re-exports
   `inflight_jobs` under that name (same `set` object, not a copy) so
   the test didn't need to change.
-* `scheduler.py` does a late `from prism_sidecar.app import
-  run_all_sync_background` (to dodge an import cycle at module-load
-  time). `app.py` re-exports `run_all_sync_background` too, so that
-  import keeps working unchanged.
+
+(`scheduler.py` used to be a second such contract — it did a late
+`from prism_sidecar.app import run_all_sync_background` inside its job
+coroutines to dodge the app↔scheduler import cycle. Since v0.5.x it
+imports the job entry points from THIS module at load time; this module
+never imports scheduler, so there is no cycle and app.py's forwarding
+lines for the run_*_background pair are gone.)
 
 Concurrency model (v0.5.x — fetch overlaps, writes stay serial)
 ----------------------------------------------------------------

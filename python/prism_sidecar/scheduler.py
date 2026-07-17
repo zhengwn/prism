@@ -18,37 +18,23 @@ from apscheduler.triggers.cron import CronTrigger
 
 from prism_sidecar.config import DAILY_SYNC_ENABLED, DAILY_SYNC_HOUR, DAILY_SYNC_TZ
 
+# Imported at module top since v0.5.x. The job entry points used to live
+# in app.py, which imports this module — so this file reached them via a
+# late `from prism_sidecar.app import ...` INSIDE each job coroutine to
+# dodge the circular import at load time. The functions' real home is
+# pipeline/orchestrator.py now (which never imports scheduler), so the
+# cycle is gone and the dependency can sit where it's visible. The old
+# shape also had the worst possible failure mode: an import problem
+# surfaced not at startup but at the first cron fire the next morning.
+from prism_sidecar.pipeline.orchestrator import (
+    run_all_sync_background,
+    run_failed_retry_background,
+)
+
 log = logging.getLogger(__name__)
 
 
 _scheduler: Optional[AsyncIOScheduler] = None
-
-
-async def _safe_run_all_sync() -> None:
-    """Coroutine job the scheduler fires directly on the event loop.
-
-    This MUST be a coroutine function: APScheduler's ``AsyncIOExecutor``
-    schedules coroutine jobs on the running loop, but runs *sync*
-    functions in a thread-pool worker via ``run_in_executor``. The old
-    sync wrapper here called ``asyncio.get_event_loop()`` from that
-    worker thread, which raises ``RuntimeError`` on Python 3.10+ (no
-    event loop in a non-main thread) — so the daily sync silently never
-    ran. Keeping the late import inside the coroutine still avoids the
-    app.py import cycle.
-    """
-    from prism_sidecar.app import run_all_sync_background  # late import: avoid cycle
-
-    await run_all_sync_background()
-
-
-async def _safe_run_failed_retry() -> None:
-    """Hourly coroutine job: retry known-failed sources past cooldown.
-
-    Same late-import + coroutine constraints as `_safe_run_all_sync`.
-    """
-    from prism_sidecar.app import run_failed_retry_background  # late import: avoid cycle
-
-    await run_failed_retry_background()
 
 
 def start_scheduler() -> AsyncIOScheduler:
@@ -58,9 +44,16 @@ def start_scheduler() -> AsyncIOScheduler:
         return _scheduler
 
     _scheduler = AsyncIOScheduler(timezone=DAILY_SYNC_TZ)
+    # Both jobs MUST be coroutine functions (they are): APScheduler's
+    # ``AsyncIOExecutor`` schedules coroutine jobs on the running loop,
+    # but runs *sync* functions in a thread-pool worker via
+    # ``run_in_executor``. A pre-v0.2b sync wrapper here called
+    # ``asyncio.get_event_loop()`` from that worker thread, which raises
+    # ``RuntimeError`` on Python 3.10+ (no event loop in a non-main
+    # thread) — so the daily sync silently never ran.
     if DAILY_SYNC_ENABLED:
         _scheduler.add_job(
-            _safe_run_all_sync,
+            run_all_sync_background,
             CronTrigger(hour=DAILY_SYNC_HOUR, minute=0, timezone=DAILY_SYNC_TZ),
             id="daily_sync",
             name=f"Daily sync at {DAILY_SYNC_HOUR:02d}:00 {DAILY_SYNC_TZ}",
@@ -72,7 +65,7 @@ def start_scheduler() -> AsyncIOScheduler:
         # collides with the daily job at :00; the orchestrator's lock
         # checks make an accidental overlap a harmless no-op anyway.
         _scheduler.add_job(
-            _safe_run_failed_retry,
+            run_failed_retry_background,
             CronTrigger(minute=30, timezone=DAILY_SYNC_TZ),
             id="failed_retry_sync",
             name="Hourly retry of failed sources (past cooldown)",
