@@ -30,7 +30,7 @@ Prism 是一个 **AI 资讯聚合 + 知识提炼** 桌面应用，把分散在 R
 
 **v0.4 部分落地**（2026-07-11）：**macOS 打包**——PyInstaller 把 Python sidecar 冻成自包含二进制（~77MB）打进 Tauri 包，终端用户不需要 uv/Python；`npm run package:mac` 出 `Prism.app` + DMG（未签名、arm64，见下面「打包成桌面 App」）。Windows / 签名公证 / universal / 自动更新仍待做。
 
-**v0.5 已完成**（2026-07-13，四个切片全部本机验证）：一轮 UX 完善——**⌘K 命令面板**（全局跳转页面/信息源/条目 + 切主题/语言，自研无第三方库）、**用户标签**（蒸馏自动标签之外的手动标签，可编辑 chip + 收件箱按标签筛选；收藏/星标 v0.2a 已有）、**语义搜索**（MiniMax `embo-01` embedding + sqlite-vec KNN，收件箱可切「关键词 / 语义」；无 key 或扩展未加载时自动回落 FTS5）、**桌面通知**（`tauri-plugin-notification`，后台/定时同步抓到新内容时发系统通知，Settings 开关 + 权限请求，手动 Sync now 不重复弹）。真实 MiniMax key 实跑：语义查询 4/4 命中预期条目。两条壳内限制诚实记账（见 ROADMAP）：冻结包的 sqlite-vec `.dylib` 需 `--add-binary`、真实 OS 通知投递需 `tauri dev`/打包版才能实测。
+**v0.5 已完成**（2026-07-13，四个切片全部本机验证）：一轮 UX 完善——**⌘K 命令面板**（全局跳转页面/信息源/条目 + 切主题/语言，自研无第三方库）、**用户标签**（蒸馏自动标签之外的手动标签，可编辑 chip + 收件箱按标签筛选；收藏/星标 v0.2a 已有）、**语义搜索**（MiniMax `embo-01` embedding + sqlite-vec KNN，收件箱可切「关键词 / 语义」；无 key 或扩展未加载时自动回落 FTS5）、**桌面通知**（`tauri-plugin-notification`，后台/定时同步抓到新内容时发系统通知，Settings 开关 + 权限请求，手动 Sync now 不重复弹）。真实 MiniMax key 实跑：语义查询 4/4 命中预期条目。两条壳内限制诚实记账（见 ROADMAP）：冻结包的 sqlite-vec `.dylib` **已补打包**（`--collect-all sqlite_vec`，2026-09-15，冻结产物实测语义搜索可用）、真实 OS 通知投递需 `tauri dev`/打包版才能实测。
 
 详细规划见 [`docs/ROADMAP.md`](./docs/ROADMAP.md)。
 
@@ -118,7 +118,12 @@ npm run package:mac
 慢（几分钟），首次跑请耐心。
 
 **当前包未签名**（还没有 Apple Developer ID）。你自己本地构建的 `.app` 不带 quarantine，
-直接双击能开；**分发给别人**时对方首次打开会被 Gatekeeper 拦，需右键→打开，或：
+直接双击能开；**分发给别人**时对方首次打开会被 Gatekeeper 拦。注意 **macOS 15 Sequoia 起
+「右键 → 打开」这个老绕过路径已被移除**，两条放行方式：
+
+1. **系统设置**：双击 App → 弹窗点「完成」→ 打开 **系统设置 → 隐私与安全性**，滚到底部
+   「安全性」区，点被拦 App 旁边的 **「仍要打开」**，认证后确认
+2. **终端**（所有 macOS 版本通用，最稳）：
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/Prism.app

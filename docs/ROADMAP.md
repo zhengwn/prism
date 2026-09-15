@@ -183,16 +183,20 @@
   (80MB),冻结 sidecar 落在 `Contents/MacOS/prism-sidecar`
 - [ ] **universal binary**：native wheel(uvloop/httptools/pydantic-core/aiosqlite)分架构,
   PyInstaller 出不了 universal2;需 CI 分别 arm64/x86_64 冻结再 `lipo` 合并。当前只出 arm64
-- [ ] **代码签名 / 公证**：无 Apple Developer ID($99/年)/ Windows 证书 → 当前包**未签名**。
-  macOS 用户首次打开需右键→打开或 `xattr -dr com.apple.quarantine Prism.app`(见 README)
+- [x] **代码签名 / 公证**：**不做（暂缓）**——无 Apple Developer ID($99/年)。分发包**未签名**；
+  macOS 15 Sequoia 起「右键→打开」绕过已被移除，首次打开走 **系统设置 → 隐私与安全性 →
+  「仍要打开」**，或 `xattr -dr com.apple.quarantine Prism.app`(见 README)
 - [ ] **Windows 打包（MSI / NSIS）**：需 Windows 机或 GitHub Actions(仓库当前无 CI)。
   `externalBin` + `resolve_bundled_sidecar` 的 `.exe` 分支已就绪,只差在 Windows 上跑冻结 + 打包
 - [ ] **MCP server 打包**：`prism-mcp` 本切片未冻结(agent/power-user 路径);后续可加第二个
   externalBin 或给冻结二进制加子命令
-- [ ] **冻结包内的 sqlite-vec**(v0.5 带出):语义搜索靠 sqlite-vec 的可加载扩展(.dylib/.so/.dll)。
-  PyInstaller 不会自动打包它——冻结时需 `--add-binary $(python -c 'import sqlite_vec;print(sqlite_vec.loadable_path())')`。
-  没打进去时 `vec_available()=False`、语义搜索自动关闭、回落 FTS(已做尽力加载),所以**不阻断**冻结包运行,
-  但打包时要补这条才能在分发版里用上语义搜索
+- [x] **冻结包内的 sqlite-vec**(v0.5 带出,2026-09-15 补):语义搜索靠 sqlite-vec 的可加载
+  扩展(vec0.dylib)。PyInstaller 只收走 `sqlite_vec/__init__.py`(普通 import),不会收旁边的
+  `vec0.dylib`(纯包数据,没有任何 import 指向它)——分发版里 `vec_available()=False`、
+  语义搜索静默回落 FTS。修复:`build-sidecar-bin.sh` 加 `--collect-all sqlite_vec`,dylib
+  随包进冻结产物。**实测**:冻结二进制 `env -i`(无 venv)+ 隔离 `PRISM_DATA_DIR` 启动,
+  启动日志 `sqlite-vec loaded; semantic search enabled`,`/api/search/status` 返回
+  `"vec_available": true`(embeddings 未配 key 属预期,那是 API 层不是 dylib 层)
 - [ ] **自动更新（tauri-plugin-updater）**：需托管 release 端点 + 更新签名密钥对
 
 ## v0.5 — UX 完善 ✅
