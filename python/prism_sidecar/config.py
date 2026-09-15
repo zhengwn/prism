@@ -48,6 +48,18 @@ DAILY_SYNC_ENABLED: bool = os.environ.get("PRISM_DAILY_SYNC_DISABLED", "0").lowe
 }
 
 
+# ----- HTTP bind -----------------------------------------------------------
+
+# What the startup banner reports as the bind address. NOT a public knob:
+# __main__ writes these from its --host/--port args before uvicorn imports
+# the app, and env (unlike module attrs) reaches --reload worker subprocesses,
+# which re-import everything fresh. Defaults mirror the CLI defaults.
+
+BIND_HOST: str = os.environ.get("PRISM_BIND_HOST", "127.0.0.1")
+
+BIND_PORT: int = int(os.environ.get("PRISM_BIND_PORT", "8765"))
+
+
 # ----- Network ------------------------------------------------------------
 
 FETCH_TIMEOUT_SEC: float = float(os.environ.get("PRISM_FETCH_TIMEOUT_SEC", "15"))
@@ -107,6 +119,8 @@ __all__ = [
     "DISTILLER_OPTIONAL",
     "PRISM_DATA_DIR",
     "PRISM_DB_PATH",
+    "BIND_HOST",
+    "BIND_PORT",
     "DAILY_SYNC_HOUR",
     "DAILY_SYNC_TZ",
     "DAILY_SYNC_ENABLED",

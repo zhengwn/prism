@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 
 import uvicorn
 
@@ -16,6 +17,13 @@ def main() -> None:
     parser.add_argument("--reload", action="store_true", help="Auto-reload on code changes")
     parser.add_argument("--version", action="version", version=f"prism-sidecar {__version__}")
     args = parser.parse_args()
+
+    # The lifespan banner reports the bind address from config.BIND_HOST /
+    # BIND_PORT. Publish ours via env BEFORE uvicorn imports the app (the
+    # string form defers that import to here) — env reaches --reload worker
+    # subprocesses, module attributes don't.
+    os.environ["PRISM_BIND_HOST"] = args.host
+    os.environ["PRISM_BIND_PORT"] = str(args.port)
 
     uvicorn.run(
         "prism_sidecar.app:app",

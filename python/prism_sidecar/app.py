@@ -29,6 +29,8 @@ from pydantic import BaseModel
 
 from prism_sidecar import __version__, _http, scheduler, search, settings, store
 from prism_sidecar.config import (
+    BIND_HOST,
+    BIND_PORT,
     DAILY_SYNC_ENABLED,
     DAILY_SYNC_HOUR,
     DAILY_SYNC_TZ,
@@ -131,8 +133,11 @@ async def lifespan(app: FastAPI):
 
     orchestrator.is_app_ready = True
     log.info(
-        "[prism-sidecar] ready on http://127.0.0.1:8765 (daily_sync=%02d:00 %s)",
-        DAILY_SYNC_HOUR, DAILY_SYNC_TZ,
+        "[prism-sidecar] ready on http://%s:%d (daily_sync=%02d:00 %s)",
+        BIND_HOST,
+        BIND_PORT,
+        DAILY_SYNC_HOUR,
+        DAILY_SYNC_TZ,
     )
 
     try:
