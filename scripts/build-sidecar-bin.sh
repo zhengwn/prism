@@ -11,6 +11,10 @@
 # ship data files, so PyInstaller's static analysis misses them — hence the
 # --collect-all flags. `uvicorn.run("prism_sidecar.app:app", ...)` is a
 # dynamic import string, covered by --collect-submodules prism_sidecar.
+# sqlite_vec's __init__.py gets picked up as an import, but its loadable
+# extension (vec0.dylib, plain package data — nothing imports it) does not;
+# without it vec_available() stays False and semantic search silently falls
+# back to FTS in every distributed build.
 
 set -euo pipefail
 
@@ -44,6 +48,7 @@ uv run pyinstaller \
   --collect-all bilibili_api \
   --collect-all uvicorn \
   --collect-all tiktoken \
+  --collect-all sqlite_vec \
   --collect-submodules prism_sidecar \
   --hidden-import prism_sidecar.app \
   --hidden-import uvloop \
